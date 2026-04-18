@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light" />
+<title>Lumen — AI analytics for marketing teams</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" />
+<link rel="stylesheet" href="/static/css/style.css" />
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css" />
+</head>
+<body>
+
+<!-- ==================== UPLOAD / SETUP SCREEN ==================== -->
+<section id="setup-screen" class="screen">
+  <nav class="site-nav">
+    <div class="nav-brand">
+      <div class="brand-mark small"></div>
+      <span>Lumen</span>
+    </div>
+    <div class="nav-meta muted small">AI analytics for marketing teams</div>
+  </nav>
+
+  <div class="hero">
+    <span class="eyebrow">AI Analytics Agent</span>
+    <h1 class="hero-title">Turn any CSV into a <em>living</em> dashboard.</h1>
+    <p class="hero-sub">Upload your data, bring your own AI key, and get a cleaned dataset, interactive charts, SQL, and a board-ready report — in about a minute.</p>
+  </div>
+
+  <div class="setup-card">
+    <div class="step-group">
+      <!-- Step 1: API key (auto-detects provider) -->
+      <div class="step-card">
+        <div class="step-label"><span class="step-num">1</span> Connect your AI</div>
+        <div class="field-row">
+          <div class="field grow">
+            <label>API key <span class="muted">— kept in server session only</span></label>
+            <input id="api-key" type="password" placeholder="sk-… · sk-ant-… · AIza…" autocomplete="off" spellcheck="false" />
+          </div>
+          <button id="save-key" class="btn btn-primary">Connect</button>
+        </div>
+        <div class="provider-hints">
+          <span class="hint-chip">OpenAI <code>gpt-4o</code></span>
+          <span class="hint-chip">Anthropic <code>claude-sonnet-4</code></span>
+          <span class="hint-chip">Google <code>gemini-1.5-pro</code></span>
+          <span class="hint-chip muted">auto-detected</span>
+        </div>
+        <div id="key-status" class="status-line"></div>
+      </div>
+
+      <!-- Step 2: Upload -->
+      <div class="step-card">
+        <div class="step-label"><span class="step-num">2</span> Upload your CSV</div>
+        <div class="upload-zone" id="upload-zone">
+          <input type="file" id="file-input" accept=".csv" hidden />
+          <div class="upload-inner">
+            <div class="upload-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </div>
+            <div class="upload-title">Drop a CSV, or <span class="link">browse files</span></div>
+            <div class="muted small">Up to 50 MB · UTF-8, Latin-1, or CP1252</div>
+          </div>
+        </div>
+        <div id="upload-status" class="status-line"></div>
+      </div>
+
+      <!-- Step 3: Mode -->
+      <div class="step-card">
+        <div class="step-label"><span class="step-num">3</span> Pick an analysis</div>
+        <div class="mode-grid">
+          <label class="mode-card"><input type="radio" name="mode" value="general" checked /><span><b>General</b><em>All-inclusive analysis</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="custom" /><span><b>Custom KPIs</b><em>Your own questions</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="email" /><span><b>Email Marketing</b><em>Opens, CTR, bounces</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="campaign" /><span><b>Campaign</b><em>ROAS, CPA, channels</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="abtest" /><span><b>A/B Testing</b><em>Variants & significance</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="site" /><span><b>Site Usage</b><em>Sessions, funnels</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="sales" /><span><b>Sales</b><em>Revenue, AOV, growth</em></span></label>
+          <label class="mode-card"><input type="radio" name="mode" value="benchmark" /><span><b>Benchmark Survey</b><em>Scores & segments</em></span></label>
+        </div>
+
+        <div id="custom-kpi-wrap" class="field hidden">
+          <label>Your custom KPIs / questions</label>
+          <textarea id="custom-kpi" rows="3" placeholder="e.g. What's the conversion rate by channel? Which product category grew fastest MoM?"></textarea>
+        </div>
+
+        <details class="benchmark-box">
+          <summary>Optional: Industry benchmarks</summary>
+          <p class="muted small">Add up to 5 benchmark values to overlay on charts.</p>
+          <div id="benchmark-rows"></div>
+          <button id="add-benchmark" class="btn btn-ghost small" type="button">+ Add benchmark</button>
+        </details>
+      </div>
+    </div>
+
+    <button id="run-analysis" class="btn btn-primary btn-lg full-width">
+      Generate dashboard
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+    </button>
+    <div id="run-status" class="status-line center"></div>
+
+    <!-- Progress -->
+    <div id="progress" class="progress-wrap hidden">
+      <div class="progress-step" data-step="1">● Cleaning data</div>
+      <div class="progress-step" data-step="2">● Sending to AI</div>
+      <div class="progress-step" data-step="3">● Rendering dashboard</div>
+    </div>
+  </div>
+</section>
+
+
+<!-- ==================== DASHBOARD SCREEN ==================== -->
+<section id="dashboard" class="screen hidden">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="brand-mark small"></div>
+      <div>
+        <div id="db-title" class="topbar-title">Dataset</div>
+        <div id="db-sub" class="topbar-sub muted small"></div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-chat" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</button>
+      <button id="btn-sql" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>SQL</button>
+      <button id="btn-excel" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Excel</button>
+      <button id="btn-pdf" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>PDF</button>
+      <button id="btn-new" class="btn btn-primary">New analysis</button>
+    </div>
+  </header>
+
+  <main class="dash">
+    <div class="dash-grid">
+      <!-- Executive summary -->
+      <div class="card span-12">
+        <div class="card-label">Executive Summary</div>
+        <p id="exec-summary" class="exec-text"></p>
+      </div>
+
+      <!-- KPI row -->
+      <div id="kpi-row" class="kpi-row span-12"></div>
+
+      <!-- Cleaning report -->
+      <div id="clean-card" class="card span-6">
+        <div class="card-label">Cleaning Report</div>
+        <div id="clean-body"></div>
+      </div>
+
+      <!-- Data quality notes -->
+      <div class="card span-6">
+        <div class="card-label">Data Quality Notes</div>
+        <ul id="dq-list" class="simple-list"></ul>
+      </div>
+
+      <!-- A/B test -->
+      <div id="ab-card" class="card span-12 hidden">
+        <div class="card-label">A/B Test Significance</div>
+        <div id="ab-body"></div>
+      </div>
+
+      <!-- Charts -->
+      <div id="charts-grid" class="charts-grid span-12"></div>
+
+      <!-- Correlation -->
+      <div id="corr-card" class="card span-6 hidden">
+        <div class="card-label">Correlation Heatmap</div>
+        <div id="corr-chart" class="chart-box"></div>
+      </div>
+
+      <!-- Time series -->
+      <div id="ts-card" class="card span-6 hidden">
+        <div class="card-label">Time Series Trend</div>
+        <div id="ts-chart" class="chart-box"></div>
+      </div>
+
+      <!-- Outliers -->
+      <div id="outlier-card" class="card span-12 hidden">
+        <div class="card-label">Outliers (IQR method)</div>
+        <div id="outlier-body"></div>
+      </div>
+
+      <!-- Follow ups -->
+      <div class="card callout span-12">
+        <div class="card-label">Recommended Follow-up Questions</div>
+        <ul id="followup-list" class="simple-list"></ul>
+      </div>
+
+      <!-- Data table -->
+      <div class="card span-12">
+        <div class="card-label-row">
+          <div class="card-label">Cleaned Data</div>
+          <input id="table-filter" class="small-input" placeholder="Filter rows..." />
+        </div>
+        <div class="table-wrap">
+          <table id="data-table"></table>
+        </div>
+      </div>
+    </div>
+  </main>
+</section>
+
+
+<!-- ==================== SQL PANEL ==================== -->
+<aside id="sql-panel" class="side-panel hidden">
+  <div class="panel-header">
+    <h3>SQL Queries (Snowflake)</h3>
+    <button class="btn-close" data-close="sql-panel">×</button>
+  </div>
+  <div id="sql-list" class="panel-body"></div>
+</aside>
+
+<!-- ==================== CHAT PANEL ==================== -->
+<aside id="chat-panel" class="side-panel hidden">
+  <div class="panel-header">
+    <h3>Chat with your data</h3>
+    <button class="btn-close" data-close="chat-panel">×</button>
+  </div>
+  <div id="chat-log" class="chat-log"></div>
+  <div class="chat-input">
+    <input id="chat-input" placeholder="Ask a question..." />
+    <button id="chat-send" class="btn btn-primary">Ask</button>
+  </div>
+</aside>
+
+<!-- ==================== COLUMN POPUP ==================== -->
+<div id="col-popup" class="popup hidden">
+  <div class="popup-inner">
+    <button class="btn-close" data-close="col-popup">×</button>
+    <h3 id="col-popup-title"></h3>
+    <div id="col-popup-meta" class="muted small"></div>
+    <div id="col-popup-chart" class="chart-box"></div>
+  </div>
+</div>
+
+<div id="overlay" class="overlay hidden"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
