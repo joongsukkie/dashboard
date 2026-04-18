@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: lumen-analytics
+    name: dashboard
     runtime: python
     plan: free
     region: oregon

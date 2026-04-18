@@ -1,38 +1,38 @@
 /* ==========================================================================
-   Lumen — AI analytics for marketing teams
-   Design language: warm neutrals, editorial serif display, Inter UI.
-   Inspired by Claude (warm paper), Apple (whitespace), Linear (crisp UI).
+   Dashboard — AI analytics for marketing teams
+   Design language: neutral paper, editorial serif display, Inter UI.
+   Emerald accent. Inspired by Apple (whitespace), Linear (crisp UI).
    ========================================================================== */
 
 :root {
   color-scheme: light;
 
-  /* Base palette — warm paper */
-  --paper:       #F7F5F0;   /* page */
-  --paper-deep:  #EFEBE2;   /* subtle depth */
-  --ink:         #1C1B1A;   /* primary text, near-black but warm */
-  --ink-muted:   #5B5853;   /* secondary text */
-  --ink-dim:     #8A857D;   /* tertiary */
-  --line:        #E4DED1;   /* hairlines */
-  --line-strong: #D4CCB8;
+  /* Base palette — soft neutral paper */
+  --paper:       #F6F7F4;   /* page, faint green-tinted off-white */
+  --paper-deep:  #EDEFE9;   /* subtle depth */
+  --ink:         #141815;   /* primary text, near-black, slight cool */
+  --ink-muted:   #4C564F;   /* secondary text */
+  --ink-dim:     #7E8881;   /* tertiary */
+  --line:        #E2E7E2;   /* hairlines */
+  --line-strong: #CCD4CE;
   --surface:     #FFFFFF;   /* cards */
-  --surface-2:   #FBF9F4;
+  --surface-2:   #FAFBF9;
 
-  /* Accent — Claude-inspired burnt orange */
-  --accent:      #C8502B;
-  --accent-600:  #B34521;
-  --accent-700:  #983818;
-  --accent-soft: #F4E8E0;
+  /* Accent — refined emerald */
+  --accent:      #15803D;   /* emerald-700 */
+  --accent-600:  #166534;   /* emerald-800 */
+  --accent-700:  #14532D;   /* emerald-900 */
+  --accent-soft: #DCFCE7;   /* emerald-100 */
 
   /* Semantic */
-  --success: #527A52;
+  --success: #15803D;
   --warn:    #B07A1F;
   --danger:  #B53A2C;
 
-  /* Shadows (warm, soft) */
-  --shadow-sm: 0 1px 2px rgba(40, 28, 15, 0.04);
-  --shadow:    0 1px 2px rgba(40, 28, 15, 0.05), 0 8px 24px rgba(40, 28, 15, 0.05);
-  --shadow-lg: 0 10px 30px rgba(40, 28, 15, 0.08), 0 30px 60px rgba(40, 28, 15, 0.08);
+  /* Shadows — soft, cool */
+  --shadow-sm: 0 1px 2px rgba(20, 32, 22, 0.04);
+  --shadow:    0 1px 2px rgba(20, 32, 22, 0.05), 0 8px 24px rgba(20, 32, 22, 0.05);
+  --shadow-lg: 0 10px 30px rgba(20, 32, 22, 0.08), 0 30px 60px rgba(20, 32, 22, 0.08);
 
   --radius:    12px;
   --radius-lg: 18px;
@@ -58,8 +58,8 @@ html, body {
 
 body {
   background-image:
-    radial-gradient(900px 420px at 90% -150px, rgba(200, 80, 43, 0.10), transparent 60%),
-    radial-gradient(700px 380px at -10% 10%, rgba(200, 80, 43, 0.05), transparent 60%),
+    radial-gradient(900px 420px at 90% -150px, rgba(21, 128, 61, 0.10), transparent 60%),
+    radial-gradient(700px 380px at -10% 10%, rgba(21, 128, 61, 0.05), transparent 60%),
     radial-gradient(1000px 500px at 50% 120%, rgba(142, 58, 29, 0.06), transparent 60%);
   background-attachment: fixed;
   position: relative;
@@ -87,7 +87,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; color: var(--ink); letter-spacing:
 .link { color: var(--accent); font-weight: 500; }
 code {
   font-family: var(--font-mono); font-size: 0.88em;
-  background: rgba(200, 80, 43, 0.08); color: var(--accent-700);
+  background: rgba(21, 128, 61, 0.08); color: var(--accent-700);
   padding: 1px 6px; border-radius: 5px;
 }
 
@@ -110,7 +110,7 @@ input, select, textarea {
 input:hover, select:hover, textarea:hover { border-color: var(--ink-dim); }
 input:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(200, 80, 43, 0.14);
+  box-shadow: 0 0 0 4px rgba(21, 128, 61, 0.14);
   background: #FFFFFF;
 }
 input::placeholder, textarea::placeholder { color: var(--ink-dim); opacity: 1; }
@@ -150,7 +150,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .btn-ghost:hover { background: var(--surface-2); border-color: var(--ink); }
 .btn-accent {
   background: var(--accent); color: #FFFFFF; border-color: var(--accent-600);
-  box-shadow: 0 1px 2px rgba(200,80,43,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
+  box-shadow: 0 1px 2px rgba(21,128,61,0.25), inset 0 1px 0 rgba(255,255,255,0.15);
 }
 .btn-accent:hover { background: var(--accent-600); border-color: var(--accent-700); }
 .btn-lg { padding: 15px 26px; font-size: 15.5px; font-weight: 600; }
@@ -177,11 +177,11 @@ textarea { resize: vertical; line-height: 1.6; }
   border-radius: 8px;
   background:
     radial-gradient(circle at 30% 30%, #F4E8D8 0%, transparent 40%),
-    linear-gradient(135deg, #D96539 0%, var(--accent) 40%, #8E3A1D 100%);
+    linear-gradient(135deg, #22C55E 0%, var(--accent) 40%, var(--accent-700) 100%);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.2),
     inset 0 -2px 4px rgba(0,0,0,0.1),
-    0 2px 6px rgba(200, 80, 43, 0.3);
+    0 2px 6px rgba(21, 128, 61, 0.3);
   flex-shrink: 0;
   position: relative;
 }
@@ -322,7 +322,7 @@ textarea { resize: vertical; line-height: 1.6; }
   display: flex; align-items: center; justify-content: center;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid rgba(200, 80, 43, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.18);
   border-radius: 14px;
 }
 .upload-title { font-weight: 500; color: var(--ink); margin-bottom: 4px; font-size: 15.5px; }
@@ -346,7 +346,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .mode-card em { font-size: 12px; color: var(--ink-muted); font-style: normal; line-height: 1.4; }
 .mode-card:has(input:checked) {
   border-color: var(--accent); background: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(200, 80, 43, 0.12);
+  box-shadow: 0 0 0 3px rgba(21, 128, 61, 0.12);
 }
 .mode-card:has(input:checked) b { color: var(--accent-700); }
 
@@ -374,7 +374,7 @@ textarea { resize: vertical; line-height: 1.6; }
   display: flex; gap: 22px; justify-content: center;
   margin-top: 18px; padding: 16px 20px;
   background: var(--accent-soft);
-  border: 1px solid rgba(200, 80, 43, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.18);
   border-radius: var(--radius);
   color: var(--ink-muted); font-size: 13.5px;
 }
@@ -414,8 +414,8 @@ textarea { resize: vertical; line-height: 1.6; }
   color: var(--ink);
 }
 .card.callout {
-  background: linear-gradient(135deg, var(--accent-soft) 0%, #F9EFE8 100%);
-  border-color: rgba(200, 80, 43, 0.2);
+  background: linear-gradient(135deg, var(--accent-soft) 0%, #ECFDF5 100%);
+  border-color: rgba(21, 128, 61, 0.2);
 }
 .span-12 { grid-column: span 12; }
 .span-6 { grid-column: span 6; }
@@ -458,7 +458,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 .kpi::before {
   content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-  background: linear-gradient(90deg, var(--accent), #E0825E);
+  background: linear-gradient(90deg, var(--accent), #22C55E);
 }
 .kpi-label {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
@@ -501,7 +501,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .pill {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent-700); font-size: 12px; font-weight: 500;
-  margin: 2px; border: 1px solid rgba(200, 80, 43, 0.15);
+  margin: 2px; border: 1px solid rgba(21, 128, 61, 0.15);
 }
 
 .simple-list { margin: 0; padding-left: 20px; color: var(--ink); }
@@ -538,7 +538,7 @@ textarea { resize: vertical; line-height: 1.6; }
   position: fixed; right: 0; top: 0; bottom: 0;
   width: 540px; max-width: 92vw;
   background: var(--surface);
-  box-shadow: -16px 0 48px rgba(40, 28, 15, 0.18);
+  box-shadow: -16px 0 48px rgba(20, 32, 22, 0.18);
   z-index: 100;
   display: flex; flex-direction: column;
   border-left: 1px solid var(--line);
@@ -600,7 +600,7 @@ textarea { resize: vertical; line-height: 1.6; }
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: 0 30px 80px rgba(40, 28, 15, 0.3); z-index: 200;
+  box-shadow: 0 30px 80px rgba(20, 32, 22, 0.3); z-index: 200;
   width: 680px; max-width: 92vw; max-height: 85vh; overflow: auto;
   color: var(--ink);
 }
@@ -647,7 +647,7 @@ textarea { resize: vertical; line-height: 1.6; }
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid rgba(200, 80, 43, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.18);
   margin-bottom: 16px;
 }
 .feature h3 {

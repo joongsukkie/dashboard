@@ -58,8 +58,8 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
 STORE: dict = {}
 STORE_LOCK = Lock()
 
-ACCENT = "#C8502B"  # Warm terracotta accent
-PALETTE = ["#C8502B", "#E0825E", "#8E3A1D", "#5B5853", "#A98A5E", "#527A52", "#7A5A87", "#1C1B1A"]
+ACCENT = "#15803D"  # Emerald-700 accent
+PALETTE = ["#15803D", "#22C55E", "#14532D", "#4C564F", "#65A30D", "#0D9488", "#A98A5E", "#141815"]
 
 
 # -----------------------------------------------------------------------------
@@ -390,19 +390,19 @@ def _fig_layout(fig, title):
     fig.update_layout(
         title=dict(
             text=title,
-            font=dict(size=15, family="Inter, -apple-system, system-ui, sans-serif", color="#1C1B1A"),
+            font=dict(size=15, family="Inter, -apple-system, system-ui, sans-serif", color="#141815"),
             x=0, xanchor="left", pad=dict(l=6),
         ),
-        font=dict(family="Inter, -apple-system, system-ui, sans-serif", color="#1C1B1A", size=12),
+        font=dict(family="Inter, -apple-system, system-ui, sans-serif", color="#141815", size=12),
         plot_bgcolor="#FFFFFF",
         paper_bgcolor="#FFFFFF",
         margin=dict(l=50, r=30, t=50, b=50),
         colorway=PALETTE,
-        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="#E4DED1", borderwidth=0, font=dict(size=11)),
-        hoverlabel=dict(bgcolor="#1C1B1A", font=dict(color="#F7F5F0", family="Inter")),
+        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="#E2E7E2", borderwidth=0, font=dict(size=11)),
+        hoverlabel=dict(bgcolor="#141815", font=dict(color="#F6F7F4", family="Inter")),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#F0EBE0", zeroline=False, linecolor="#E4DED1")
-    fig.update_yaxes(showgrid=True, gridcolor="#F0EBE0", zeroline=False, linecolor="#E4DED1")
+    fig.update_xaxes(showgrid=True, gridcolor="#EDEFE9", zeroline=False, linecolor="#E2E7E2")
+    fig.update_yaxes(showgrid=True, gridcolor="#EDEFE9", zeroline=False, linecolor="#E2E7E2")
     return fig
 
 
@@ -449,7 +449,7 @@ def build_chart(df: pd.DataFrame, spec: dict) -> dict | None:
         elif ctype == "heatmap":
             if x and y:
                 pivot = df.pivot_table(index=y, columns=x, aggfunc="size", fill_value=0)
-                fig = px.imshow(pivot, color_continuous_scale=[[0, "#FBF2EC"], [0.5, "#E0825E"], [1, "#8E3A1D"]])
+                fig = px.imshow(pivot, color_continuous_scale=[[0, "#ECFDF5"], [0.5, "#22C55E"], [1, "#14532D"]])
             else:
                 return None
         else:
