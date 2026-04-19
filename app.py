@@ -64,7 +64,16 @@ STORE: dict = {}
 STORE_LOCK = Lock()
 
 ACCENT = "#15803D"  # Emerald-700
+# Single-accent palette: used for single-series charts (time series, scatter).
 PALETTE = ["#15803D", "#22C55E", "#14532D", "#4E7C4A", "#65A30D", "#0D9488", "#4B5650", "#121815"]
+# Distinct categorical palette: each category gets a visually different hue.
+# Used for grouped bars, box plots by category, and binary comparisons where
+# the colors must be readable as separate groups (not shades of green).
+CAT_PALETTE = [
+    "#15803D", "#D97706", "#2563EB", "#DC2626", "#7C3AED",
+    "#0891B2", "#DB2777", "#CA8A04", "#4B5650", "#059669",
+    "#9333EA", "#EA580C",
+]
 
 
 # -----------------------------------------------------------------------------
@@ -132,12 +141,22 @@ def _fuzzy_canonicalize(series: pd.Series, cutoff: float = 0.85) -> tuple[pd.Ser
                 used.add(other)
         clusters.append(group)
 
-    # Canonical spelling = most common original-case form in the cluster.
+    # Canonical spelling heuristic:
+    #   1. Prefer the LONGEST form — typos usually drop letters (hyderbad →
+    #      Hyderabad, hyd → hyderabad).
+    #   2. Among equal-length candidates, prefer a mixed-case form (has an
+    #      uppercase letter) over all-lowercase — proper nouns typically
+    #      capitalize.
+    #   3. Frequency is only the final tiebreaker.
     mapping_norm: dict[str, str] = {}
     audit: dict[str, str] = {}
     for group in clusters:
         cluster_mask = s_norm.isin(group)
-        canonical = s[cluster_mask].value_counts().idxmax()
+        variant_counts = s[cluster_mask].value_counts()
+        def _rank(v: str) -> tuple:
+            has_upper = any(ch.isupper() for ch in v)
+            return (len(v), 1 if has_upper else 0, int(variant_counts[v]))
+        canonical = max(variant_counts.index, key=_rank)
         for norm in group:
             mapping_norm[norm] = canonical
             orig_variants = s[s_norm == norm].unique()
@@ -253,22 +272,110 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             summary["duplicate_key"] = "(full-row)"
     summary["duplicates_removed"] = before - len(df)
 
-    # 6. Record — don't fix — high-null columns and suspect values.
-    POSITIVE_HINTS = ("price", "revenue", "sales", "amount", "qty", "quantity",
-                      "units", "count", "views", "clicks", "impressions",
-                      "sessions", "users", "cost", "spend")
+    # 6. Nullify clearly-invalid values. A zero in a column called
+    #    "Revenue" is almost always missing data, not a $0 sale — treating
+    #    it as real corrupts every aggregate (drags mean to 0, flips
+    #    rankings, inflates "no significant difference" false negatives).
+    #    Same reasoning for negatives in columns that must be positive,
+    #    and for rate columns outside [0, 1] or [0, 100].
+    AMOUNT_POSITIVE_HINTS = (
+        "price", "revenue", "sales", "amount", "qty", "quantity",
+        "units", "mrp", "cost", "spend", "total", "gmv", "value",
+    )
+    RATE_HINTS = ("discount", "rate", "ratio", "pct", "percent", "conversion", "ctr")
+
+    summary["suspect_zeros_nulled"] = {}
+    summary["suspect_negatives_nulled"] = {}
+    summary["invalid_rates_nulled"] = {}
+
+    n = len(df)
     for col in df.columns:
-        n = len(df)
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        name_l = str(col).lower()
+        is_amount = any(h in name_l for h in AMOUNT_POSITIVE_HINTS)
+        is_rate = any(h in name_l for h in RATE_HINTS)
+
+        if is_amount:
+            neg_mask = df[col] < 0
+            zer_mask = df[col] == 0
+            n_neg = int(neg_mask.sum())
+            # Only treat zeros as missing if they're a meaningful
+            # fraction — a legitimate $0 row here and there should stay.
+            z_frac = (zer_mask.sum() / max(1, n))
+            n_zer = int(zer_mask.sum()) if z_frac >= 0.01 else 0
+            if n_neg:
+                summary["negative_in_positive_cols"][col] = n_neg
+                summary["suspect_negatives_nulled"][col] = n_neg
+                df.loc[neg_mask, col] = np.nan
+            if n_zer:
+                summary["zero_in_positive_cols"][col] = n_zer
+                summary["suspect_zeros_nulled"][col] = n_zer
+                df.loc[zer_mask, col] = np.nan
+
+        if is_rate:
+            col_nn = df[col].dropna()
+            if len(col_nn):
+                # Decide scale: if max <= 1.5 we treat as 0–1 fraction,
+                # otherwise as 0–100 percent.
+                scale_max = 1.0 if col_nn.max() <= 1.5 else 100.0
+                invalid_mask = (df[col] < 0) | (df[col] > scale_max)
+                n_inv = int(invalid_mask.sum())
+                if n_inv:
+                    summary["invalid_rates_nulled"][col] = n_inv
+                    df.loc[invalid_mask, col] = np.nan
+
+    # 7. Reconstruct derived amount columns. If a column looks like
+    #    revenue/total but has lots of null values, and we can find
+    #    plausible price/quantity (and optional discount) components,
+    #    recompute the missing rows: revenue = price * qty * (1 - discount)
+    summary["revenue_reconstructed"] = {}
+
+    def _match_col(keywords: tuple[str, ...]) -> str | None:
+        for c in df.columns:
+            cl = str(c).lower()
+            if any(kw in cl for kw in keywords) and pd.api.types.is_numeric_dtype(df[c]):
+                return c
+        return None
+
+    revenue_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])
+                    and any(h in str(c).lower() for h in ("revenue", "sales", "total", "gmv"))]
+    price_col = _match_col(("price", "mrp", "unit_price", "list_price"))
+    qty_col = _match_col(("units", "qty", "quantity"))
+    discount_col = _match_col(("discount",))
+
+    if revenue_cols and price_col and qty_col:
+        for rev in revenue_cols:
+            missing_mask = df[rev].isna()
+            if not missing_mask.any():
+                continue
+            comp = df[[price_col, qty_col]].copy()
+            usable = comp[price_col].notna() & comp[qty_col].notna() & missing_mask
+            if not usable.any():
+                continue
+            d_factor = 1.0
+            if discount_col is not None:
+                d = df[discount_col].copy()
+                d_scale = 1.0 if d.dropna().max() <= 1.5 else 100.0
+                d_factor = (1.0 - (d.fillna(0) / d_scale))
+            recomputed = df[price_col] * df[qty_col]
+            if isinstance(d_factor, pd.Series):
+                recomputed = recomputed * d_factor
+            df.loc[usable, rev] = recomputed[usable]
+            summary["revenue_reconstructed"][rev] = {
+                "rows_filled": int(usable.sum()),
+                "formula": (
+                    f"{price_col} * {qty_col}"
+                    + (f" * (1 - {discount_col}/{int(100 if discount_col and df[discount_col].dropna().max() > 1.5 else 1)})"
+                       if discount_col is not None else "")
+                ),
+            }
+
+    # 8. Record — don't fix — high-null columns.
+    for col in df.columns:
         null_pct = (df[col].isna().sum() / n) if n else 0.0
         if null_pct >= 0.30:
             summary["high_null_columns"][col] = round(float(null_pct), 3)
-        if pd.api.types.is_numeric_dtype(df[col]) and any(h in str(col).lower() for h in POSITIVE_HINTS):
-            neg = int((df[col] < 0).sum())
-            zer = int((df[col] == 0).sum())
-            if neg:
-                summary["negative_in_positive_cols"][col] = neg
-            if zer and zer / max(1, n) >= 0.01:
-                summary["zero_in_positive_cols"][col] = zer
 
     summary["rows_with_any_null"] = int(df.isna().any(axis=1).sum())
     summary["cleaned_shape"] = list(df.shape)
@@ -677,7 +784,7 @@ def build_auto_charts(df: pd.DataFrame) -> list[dict]:
             g = df[cat].value_counts(dropna=True).head(15).reset_index()
             g.columns = [cat, "Rows"]
             fig = px.bar(g, x="Rows", y=cat, orientation="h", color=cat,
-                         color_discrete_sequence=PALETTE)
+                         color_discrete_sequence=CAT_PALETTE)
             fig = _fig_layout(fig, f"Row count by {cat}")
             fig.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False)
             charts.append({
@@ -692,7 +799,7 @@ def build_auto_charts(df: pd.DataFrame) -> list[dict]:
         g = d.groupby(cat)[primary_amount].agg(["sum", "mean", "count"]).reset_index()
         g = g.sort_values("sum", ascending=False).head(15)
         fig = px.bar(g, x="sum", y=cat, orientation="h", color=cat,
-                     color_discrete_sequence=PALETTE,
+                     color_discrete_sequence=CAT_PALETTE,
                      hover_data={"mean": ":,.2f", "count": True})
         fig = _fig_layout(fig, f"Total {primary_amount} by {cat}")
         fig.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False)
@@ -713,7 +820,7 @@ def build_auto_charts(df: pd.DataFrame) -> list[dict]:
         d = df[[cat, primary_amount]].dropna()
         if d[cat].nunique() <= 20 and len(d) >= 10:
             fig = px.box(d, x=cat, y=primary_amount, color=cat,
-                         color_discrete_sequence=PALETTE, points="outliers")
+                         color_discrete_sequence=CAT_PALETTE, points="outliers")
             fig = _fig_layout(fig, f"{primary_amount} distribution by {cat}")
             fig.update_layout(showlegend=False)
             charts.append({
@@ -722,6 +829,78 @@ def build_auto_charts(df: pd.DataFrame) -> list[dict]:
                     f"Box plot of {primary_amount} for each {cat}. Compare "
                     f"medians and spread — wider boxes indicate higher "
                     f"variance within that {cat}."
+                ),
+                "figure": _to_fig_dict(fig),
+            })
+
+    # ---- 4b. Binary: discount vs no-discount comparison --------------------
+    # The clearest analytical question around a discount column is not "does
+    # revenue correlate with discount %" (noisy, confounded) but "do rows
+    # that received ANY discount differ from rows that received none?".
+    discount_col = next(
+        (c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])
+         and "discount" in str(c).lower()),
+        None,
+    )
+    if discount_col and primary_amount and primary_amount != discount_col:
+        d = df[[discount_col, primary_amount]].dropna()
+        if len(d) >= 20:
+            has_disc = (d[discount_col] > 0).map({True: "With discount", False: "No discount"})
+            g = d.assign(_grp=has_disc).groupby("_grp")[primary_amount].agg(
+                ["mean", "median", "count", "sum"]
+            ).reset_index()
+            if len(g) == 2:
+                fig = px.bar(
+                    g, x="_grp", y="mean", color="_grp",
+                    color_discrete_sequence=[CAT_PALETTE[0], CAT_PALETTE[1]],
+                    hover_data={"median": ":,.2f", "count": True, "sum": ":,.2f"},
+                )
+                fig = _fig_layout(fig, f"Mean {primary_amount}: discount vs no-discount")
+                fig.update_layout(showlegend=False)
+                fig.update_xaxes(title_text="")
+                fig.update_yaxes(title_text=f"Mean {primary_amount}")
+                with_row = g[g["_grp"] == "With discount"].iloc[0]
+                no_row = g[g["_grp"] == "No discount"].iloc[0]
+                lift = (with_row["mean"] - no_row["mean"]) / no_row["mean"] * 100 if no_row["mean"] else 0
+                charts.append({
+                    "title": f"Discount impact on {primary_amount}",
+                    "insight": (
+                        f"With discount (n={int(with_row['count'])}): mean "
+                        f"{with_row['mean']:,.2f}. No discount "
+                        f"(n={int(no_row['count'])}): mean {no_row['mean']:,.2f}. "
+                        f"Difference: {lift:+.1f}%."
+                    ),
+                    "figure": _to_fig_dict(fig),
+                })
+
+    # ---- 4c. Profit-by-group (in addition to revenue/primary amount) -------
+    # If a profit/margin column exists, surface it separately — aggregating
+    # revenue hides whether the revenue was profitable.
+    profit_col = next(
+        (c for c in measure_cols
+         if any(h in str(c).lower() for h in ("profit", "margin", "gross"))),
+        None,
+    )
+    if profit_col and profit_col != primary_amount and cat_cols:
+        for cat in cat_cols[:2]:
+            d = df[[cat, profit_col]].dropna()
+            if len(d) < 3 or d[cat].nunique() < 2:
+                continue
+            g = d.groupby(cat)[profit_col].agg(["sum", "mean", "count"]).reset_index()
+            g = g.sort_values("sum", ascending=False).head(15)
+            fig = px.bar(g, x="sum", y=cat, orientation="h", color=cat,
+                         color_discrete_sequence=CAT_PALETTE,
+                         hover_data={"mean": ":,.2f", "count": True})
+            fig = _fig_layout(fig, f"Total {profit_col} by {cat}")
+            fig.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False)
+            fig.update_xaxes(title_text=f"Sum of {profit_col}")
+            top = g.iloc[0]
+            charts.append({
+                "title": f"{profit_col} by {cat}",
+                "insight": (
+                    f"Top {cat} by {profit_col}: {top[cat]} — total "
+                    f"{top['sum']:,.2f} (mean {top['mean']:,.2f} across "
+                    f"{int(top['count'])} rows)."
                 ),
                 "figure": _to_fig_dict(fig),
             })
@@ -1329,6 +1508,10 @@ def export_excel():
         ("high_null_columns", "High-null columns (>=30% null, KEPT)"),
         ("negative_in_positive_cols", "Negative values in expected-positive columns"),
         ("zero_in_positive_cols", "Zero values in expected-positive columns"),
+        ("suspect_negatives_nulled", "Negative values nullified (set to NaN)"),
+        ("suspect_zeros_nulled", "Zero values nullified (set to NaN)"),
+        ("invalid_rates_nulled", "Out-of-range rate/discount values nullified"),
+        ("revenue_reconstructed", "Revenue rows reconstructed from components"),
         ("rows_with_any_null", "Rows with at least one null"),
     ]:
         val = clean.get(key)
@@ -1440,6 +1623,10 @@ def export_pdf():
             ["High-null columns (kept)", json.dumps(clean.get("high_null_columns", {}))[:400]],
             ["Negative in positive cols", json.dumps(clean.get("negative_in_positive_cols", {}))[:400]],
             ["Zero in positive cols", json.dumps(clean.get("zero_in_positive_cols", {}))[:400]],
+            ["Negatives nullified (→ NaN)", json.dumps(clean.get("suspect_negatives_nulled", {}))[:400]],
+            ["Zeros nullified (→ NaN)", json.dumps(clean.get("suspect_zeros_nulled", {}))[:400]],
+            ["Invalid rates/discounts nullified", json.dumps(clean.get("invalid_rates_nulled", {}))[:400]],
+            ["Revenue reconstructed", json.dumps(clean.get("revenue_reconstructed", {}))[:400]],
             ["Rows with any null", str(clean.get("rows_with_any_null", 0))],
         ]
         t = Table(clean_rows, colWidths=[1.8 * inch, 5.0 * inch])

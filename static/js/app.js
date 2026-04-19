@@ -327,6 +327,10 @@ function renderClean(c) {
     ["High-null columns (kept, not dropped)", pillMap(c.high_null_columns)],
     ["Negative values in positive-expected cols", pillMap(c.negative_in_positive_cols)],
     ["Zero values in positive-expected cols", pillMap(c.zero_in_positive_cols)],
+    ["Negatives nullified (→ NaN)", pillMap(c.suspect_negatives_nulled)],
+    ["Zeros nullified (→ NaN)", pillMap(c.suspect_zeros_nulled)],
+    ["Invalid rates/discounts nullified", pillMap(c.invalid_rates_nulled)],
+    ["Revenue rows reconstructed", pillReconMap(c.revenue_reconstructed)],
     ["Rows with any null", c.rows_with_any_null || 0],
   ];
   box.innerHTML = rows.map(([l, v]) =>
@@ -341,6 +345,14 @@ function pillMap(obj) {
   if (!obj || !Object.keys(obj).length) return "";
   return Object.entries(obj).map(([k, v]) =>
     `<span class="pill">${esc(k)}: ${esc(String(v))}</span>`).join("");
+}
+function pillReconMap(obj) {
+  if (!obj || !Object.keys(obj).length) return "";
+  return Object.entries(obj).map(([col, info]) => {
+    const rows = info?.rows_filled ?? 0;
+    const formula = info?.formula || "";
+    return `<span class="pill">${esc(col)}: ${rows} rows (${esc(formula)})</span>`;
+  }).join("");
 }
 function pillMergeMap(obj) {
   if (!obj || !Object.keys(obj).length) return "";
