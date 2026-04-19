@@ -686,12 +686,22 @@ def api_upload():
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     state = get_state()
-    if "original_df" not in state:
-        return jsonify({"error": "No dataset found in this session. Please re-upload your CSV."}), 400
-    if "provider" not in state or "api_key" not in state:
-        return jsonify({"error": "API key not found in this session. Please re-enter your key and click Connect."}), 400
-
     body = request.get_json(silent=True) or {}
+
+    # Accept api_key from request body (preferred, survives server restarts)
+    # or fall back to server session state.
+    api_key = (body.get("api_key") or state.get("api_key") or "").strip()
+    provider = detect_provider(api_key) if api_key else state.get("provider")
+
+    if "original_df" not in state:
+        return jsonify({"error": "No dataset found on the server. Please re-upload your CSV."}), 400
+    if not api_key or not provider:
+        return jsonify({"error": "API key missing or unrecognized. Please re-enter your key and click Connect."}), 400
+
+    # Cache for subsequent calls (chat, etc.)
+    state["api_key"] = api_key
+    state["provider"] = provider
+
     mode = body.get("mode", "general")
     custom = body.get("custom", "")
     benchmarks = body.get("benchmarks", [])  # list of {metric, value}
@@ -706,7 +716,7 @@ def api_analyze():
         profile = profile_dataframe(df)
 
         # 3. AI analysis
-        ai = analyze(state["provider"], state["api_key"], profile, mode, custom, benchmarks)
+        ai = analyze(provider, api_key, profile, mode, custom, benchmarks)
 
         # 4. Build charts
         charts = []
@@ -818,10 +828,13 @@ def api_chat():
     df = state.get("cleaned_df")
     if df is None:
         return jsonify({"error": "No dataset analyzed yet"}), 400
-    if "provider" not in state:
-        return jsonify({"error": "AI provider not configured"}), 400
 
     body = request.get_json(silent=True) or {}
+    api_key = (body.get("api_key") or state.get("api_key") or "").strip()
+    provider = detect_provider(api_key) if api_key else state.get("provider")
+    if not api_key or not provider:
+        return jsonify({"error": "API key missing. Please re-enter your key."}), 400
+
     question = (body.get("question") or "").strip()
     if not question:
         return jsonify({"error": "Empty question"}), 400
@@ -841,8 +854,8 @@ Return a JSON object: {{"answer": "your plain-English answer"}}"""
             "openai": call_openai,
             "anthropic": call_anthropic,
             "gemini": call_gemini,
-        }[state["provider"]]
-        raw = caller(state["api_key"], prompt, strict=False)
+        }[provider]
+        raw = caller(api_key, prompt, strict=False)
         try:
             parsed = _safe_json_extract(raw)
             return jsonify({"ok": True, "answer": parsed.get("answer", raw)})

@@ -9,6 +9,8 @@ const state = {
   tableRows: [],
   tableCols: [],
   tableSort: { col: null, dir: 1 },
+  apiKey: "",        // kept in JS memory only; sent with each server call
+  provider: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -31,6 +33,8 @@ async function connectKey() {
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "Failed");
+    state.apiKey = api_key;
+    state.provider = j.provider;
     s.innerHTML = `✓ Connected · <b>${j.label}</b>`;
     s.classList.add("ok");
   } catch (e) {
@@ -118,12 +122,19 @@ async function runAnalysis() {
     value: parseFloat(r.querySelector(".bm-value").value),
   })).filter(b => b.metric && !isNaN(b.value));
 
+  if (!state.apiKey) {
+    status.textContent = "Please connect your API key first.";
+    status.classList.add("err");
+    btn.disabled = false; prog.classList.add("hidden");
+    return;
+  }
+
   try {
     setStep(2);
     const r = await fetch("/api/analyze", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode, custom, benchmarks}),
+      body: JSON.stringify({mode, custom, benchmarks, api_key: state.apiKey}),
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "Analysis failed");
@@ -435,7 +446,7 @@ async function sendChat() {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ question: q }),
+      body: JSON.stringify({ question: q, api_key: state.apiKey }),
     });
     const j = await r.json();
     thinking.textContent = j.ok ? j.answer : (j.error || "Error");
