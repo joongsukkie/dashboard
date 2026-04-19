@@ -87,57 +87,114 @@ def get_state() -> dict:
 # -----------------------------------------------------------------------------
 # Data cleaning
 # -----------------------------------------------------------------------------
+ID_NAME_RE = __import__("re").compile(r"(?i)(^|_)id$|_id$|^id_|(order|customer|transaction|txn|user|account|invoice|record)_?(id|no|num|number)?$")
+
+
+def _detect_id_columns(df: pd.DataFrame) -> list[str]:
+    """Identify primary-key-like columns by name and uniqueness ratio."""
+    ids = []
+    for c in df.columns:
+        name_match = bool(ID_NAME_RE.search(str(c)))
+        try:
+            uniq_ratio = df[c].nunique(dropna=True) / max(1, len(df))
+        except TypeError:
+            uniq_ratio = 0.0
+        if name_match and uniq_ratio > 0.6:
+            ids.append(c)
+    return ids
+
+
+def _fuzzy_canonicalize(series: pd.Series, cutoff: float = 0.85) -> tuple[pd.Series, dict]:
+    """Merge near-duplicate categorical labels (typos, case, whitespace).
+
+    Canonical form = most frequent original spelling in each similarity
+    cluster. Returns the replaced series plus a mapping {variant: canonical}
+    for audit.
+    """
+    import difflib
+    s = series.astype(str).str.strip()
+    s_norm = s.str.lower()
+    counts = s_norm.value_counts()
+    labels = counts.index.tolist()
+
+    clusters: list[list[str]] = []
+    used: set[str] = set()
+    for label in labels:
+        if label in used:
+            continue
+        group = [label]
+        used.add(label)
+        for other in labels:
+            if other in used:
+                continue
+            if difflib.SequenceMatcher(None, label, other).ratio() >= cutoff:
+                group.append(other)
+                used.add(other)
+        clusters.append(group)
+
+    # Canonical spelling = most common original-case form in the cluster.
+    mapping_norm: dict[str, str] = {}
+    audit: dict[str, str] = {}
+    for group in clusters:
+        cluster_mask = s_norm.isin(group)
+        canonical = s[cluster_mask].value_counts().idxmax()
+        for norm in group:
+            mapping_norm[norm] = canonical
+            orig_variants = s[s_norm == norm].unique()
+            for v in orig_variants:
+                if v != canonical:
+                    audit[v] = canonical
+    return s_norm.map(mapping_norm), audit
+
+
 def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """Return cleaned df + summary of changes."""
+    """Clean the dataframe *conservatively*. Guiding principles:
+
+    - Never fabricate values. NaN stays NaN. We trust downstream analyses
+      (pandas aggregations skip NaN) to handle missingness correctly.
+    - Never drop columns for being mostly-null — high-null columns are often
+      the most analytically interesting (discounts, returns, etc.). Report
+      them instead so the AI narrative can reason about them.
+    - Deduplicate at the right grain. If there's an ID-like primary key,
+      dedupe on that. Otherwise dedupe on full rows.
+    - Canonicalize categorical spelling *before* any chart is built.
+    """
     summary = {
         "original_shape": list(df.shape),
         "whitespace_columns_fixed": [],
         "duplicates_removed": 0,
-        "nulls_filled": {},
-        "nulls_dropped": {},
+        "duplicate_key": None,
+        "id_columns": [],
         "types_inferred": {},
-        "casing_normalized": [],
+        "category_merges": {},           # {col: {variant: canonical}}
+        "high_null_columns": {},         # {col: pct}
+        "negative_in_positive_cols": {}, # {col: count}
+        "zero_in_positive_cols": {},     # {col: count}
+        "rows_with_any_null": 0,
     }
 
-    # 1. Strip whitespace from column names
+    # 1. Trim column names.
     new_cols = {c: str(c).strip() for c in df.columns}
     changed = [c for c, nc in new_cols.items() if c != nc]
     df = df.rename(columns=new_cols)
     summary["whitespace_columns_fixed"] = changed
 
-    # 2. Remove duplicate rows
-    before = len(df)
-    df = df.drop_duplicates().reset_index(drop=True)
-    summary["duplicates_removed"] = before - len(df)
-
-    # 3. Handle strings: strip whitespace + conservative casing normalization.
-    # Only collapse casing when a low-cardinality column has duplicate labels
-    # that differ *only* by case (e.g. "USA" + "usa"). Preserve original
-    # casing otherwise so acronyms and proper nouns (USA, iPhone) survive.
+    # 2. Strip string whitespace + replace empty sentinels with NaN.
     for col in df.select_dtypes(include=["object"]).columns:
         s = df[col].astype(str).str.strip()
-        nunique = s.nunique(dropna=True)
-        if 0 < nunique <= max(20, int(len(s) * 0.05)):
-            lower = s.str.lower()
-            if lower.nunique(dropna=True) < nunique:
-                # Canonicalize each label to its most-common original form.
-                canon = (
-                    s.groupby(lower).agg(lambda x: x.value_counts().idxmax())
-                )
-                s = lower.map(canon)
-                summary["casing_normalized"].append(col)
-        df[col] = s.replace({"nan": np.nan, "None": np.nan, "NaN": np.nan, "": np.nan})
+        df[col] = s.replace(
+            {"nan": np.nan, "None": np.nan, "NaN": np.nan, "NULL": np.nan,
+             "null": np.nan, "N/A": np.nan, "n/a": np.nan, "": np.nan}
+        )
 
-    # 4. Type inference — booleans (strict), dates (strict), numerics.
+    # 3. Type inference — booleans (strict), dates (strict), numerics.
     for col in df.columns:
         if df[col].dtype != object:
             continue
-        sample = df[col].dropna().astype(str).head(200)
+        sample = df[col].dropna().astype(str).head(300)
         if len(sample) == 0:
             continue
-
         lower_vals = set(sample.str.lower().str.strip().unique())
-        # Boolean: require textual truthy/falsy tokens — do NOT hijack "0"/"1".
         bool_textual = {"true", "false", "yes", "no", "t", "f"}
         if lower_vals.issubset(bool_textual) and 1 <= len(lower_vals) <= 2:
             df[col] = df[col].astype(str).str.lower().str.strip().map(
@@ -146,26 +203,16 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             )
             summary["types_inferred"][col] = "boolean"
             continue
-
-        # Date: require ≥85% of non-null values to parse successfully AND
-        # that at least two distinct dates are found (prevents integer IDs
-        # like 20240101 from being interpreted as dates against the user's
-        # intent).
         try:
             parsed = pd.to_datetime(sample, errors="coerce", utc=False)
-            ok = parsed.notna().sum()
-            if ok >= 0.85 * len(sample) and parsed.dropna().nunique() >= 2:
-                looks_like_number = sample.str.match(r"^-?\d+(\.\d+)?$").mean() > 0.8
-                if not looks_like_number:
+            if parsed.notna().sum() >= 0.85 * len(sample) and parsed.dropna().nunique() >= 2:
+                looks_numeric = sample.str.match(r"^-?\d+(\.\d+)?$").mean() > 0.8
+                if not looks_numeric:
                     df[col] = pd.to_datetime(df[col], errors="coerce")
                     summary["types_inferred"][col] = "datetime"
                     continue
         except (ValueError, TypeError):
             pass
-
-        # Numeric: strip currency/thousands/percent/whitespace. Track whether
-        # a percent sign was present so we can record it (values like "12%"
-        # become 12.0 — we do NOT divide by 100 to preserve the user's units).
         stripped = sample.str.replace(r"[,$\s]", "", regex=True).str.rstrip("%")
         had_percent = sample.str.contains("%").any()
         numeric_try = pd.to_numeric(stripped, errors="coerce")
@@ -174,28 +221,56 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             df[col] = pd.to_numeric(full_stripped, errors="coerce")
             summary["types_inferred"][col] = "numeric (percent)" if had_percent else "numeric"
 
-    # 5. Fill / drop nulls
-    for col in df.columns:
-        n_null = int(df[col].isna().sum())
-        if n_null == 0:
+    # 4. Canonicalize categorical spelling — fuzzy merge near-duplicate
+    # labels ("bengaluru"/"Bangalore"/"bangalore", "hyd"/"hyderabad"/"hyderbad")
+    # for low-cardinality object columns. Applied BEFORE any chart so every
+    # visualization sees merged labels.
+    for col in df.select_dtypes(include=["object"]).columns:
+        s = df[col]
+        nn = s.dropna()
+        if len(nn) == 0:
             continue
-        null_pct = n_null / len(df) if len(df) else 0
-        if null_pct > 0.5:
-            df = df.drop(columns=[col])
-            summary["nulls_dropped"][col] = n_null
-            continue
-        if pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = df[col].fillna(df[col].median())
-            summary["nulls_filled"][col] = f"{n_null} filled with median"
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].ffill().bfill()
-            summary["nulls_filled"][col] = f"{n_null} filled via forward/backward fill"
-        else:
-            mode = df[col].mode()
-            if len(mode) > 0:
-                df[col] = df[col].fillna(mode.iloc[0])
-                summary["nulls_filled"][col] = f"{n_null} filled with mode"
+        nunique = nn.nunique()
+        if 2 <= nunique <= max(40, int(len(nn) * 0.1)):
+            merged, audit = _fuzzy_canonicalize(nn, cutoff=0.85)
+            if audit:
+                df.loc[nn.index, col] = merged
+                summary["category_merges"][col] = audit
 
+    # 5. Dedupe — ID-aware. If a primary-key-like column exists and has
+    # repeats, dedupe on it; otherwise dedupe full rows.
+    id_cols = _detect_id_columns(df)
+    summary["id_columns"] = id_cols
+    before = len(df)
+    if id_cols:
+        key = id_cols[0]
+        if df[key].duplicated().any():
+            df = df.drop_duplicates(subset=[key], keep="first").reset_index(drop=True)
+            summary["duplicate_key"] = key
+    if len(df) == before:
+        df = df.drop_duplicates().reset_index(drop=True)
+        if not id_cols:
+            summary["duplicate_key"] = "(full-row)"
+    summary["duplicates_removed"] = before - len(df)
+
+    # 6. Record — don't fix — high-null columns and suspect values.
+    POSITIVE_HINTS = ("price", "revenue", "sales", "amount", "qty", "quantity",
+                      "units", "count", "views", "clicks", "impressions",
+                      "sessions", "users", "cost", "spend")
+    for col in df.columns:
+        n = len(df)
+        null_pct = (df[col].isna().sum() / n) if n else 0.0
+        if null_pct >= 0.30:
+            summary["high_null_columns"][col] = round(float(null_pct), 3)
+        if pd.api.types.is_numeric_dtype(df[col]) and any(h in str(col).lower() for h in POSITIVE_HINTS):
+            neg = int((df[col] < 0).sum())
+            zer = int((df[col] == 0).sum())
+            if neg:
+                summary["negative_in_positive_cols"][col] = neg
+            if zer and zer / max(1, n) >= 0.01:
+                summary["zero_in_positive_cols"][col] = zer
+
+    summary["rows_with_any_null"] = int(df.isna().any(axis=1).sum())
     summary["cleaned_shape"] = list(df.shape)
     return df, summary
 
@@ -271,10 +346,16 @@ TEMPLATES = {
 # -----------------------------------------------------------------------------
 # AI provider abstraction
 # -----------------------------------------------------------------------------
-ANALYSIS_PROMPT = """You are a senior marketing analytics expert. Analyze this dataset and return ONLY valid JSON.
+ANALYSIS_PROMPT = """You are a senior analytics expert. Return ONLY valid JSON.
 
 DATASET PROFILE:
 {profile_json}
+
+PRE-COMPUTED GROUND-TRUTH STATS (use these exact numbers — do NOT invent totals):
+{stats_json}
+
+CLEANING REPORT (honest record of what was and wasn't done to the data):
+{clean_json}
 
 ANALYSIS MODE: {mode}
 DOMAIN KPIS: {kpis}
@@ -282,22 +363,11 @@ DOMAIN GUIDANCE: {guidance}
 CUSTOM USER QUESTIONS: {custom}
 BENCHMARKS: {benchmarks}
 
-Return a JSON object with EXACTLY this schema (no prose outside JSON):
+Return a JSON object with EXACTLY this schema:
 {{
-  "executive_summary": "3-5 sentences summarizing the dataset and main findings",
+  "executive_summary": "3-5 sentences. Reference SPECIFIC numbers from the ground-truth stats above. Never invent totals.",
   "kpi_cards": [
     {{"label": "string", "value": "string (formatted)", "subtext": "string"}}
-  ],
-  "analyses": [
-    {{
-      "title": "Chart title",
-      "chart_type": "bar|line|pie|scatter|histogram|box|area|heatmap",
-      "x": "column_name or null",
-      "y": "column_name or null",
-      "color": "column_name or null",
-      "agg": "sum|mean|count|median|none",
-      "insight": "2-3 sentence plain English takeaway"
-    }}
   ],
   "data_quality_notes": ["observation 1", "observation 2"],
   "followup_questions": ["question 1", "question 2", "question 3"],
@@ -306,13 +376,22 @@ Return a JSON object with EXACTLY this schema (no prose outside JSON):
   ]
 }}
 
-REQUIREMENTS:
-- Produce between 6 and 10 analyses, prioritizing the most informative ones.
-- Produce 4 to 6 KPI cards.
-- Use ONLY columns from the dataset profile.
-- If custom questions are provided, address each one in either analyses or summary.
+CRITICAL REQUIREMENTS:
+- Charts are built deterministically in code — you do NOT propose charts.
+- Every number in executive_summary and kpi_cards MUST come from the
+  pre-computed stats above. If a stat isn't listed, do not claim it.
+- KPI values should use totals.sum/mean/median for amount columns, and
+  row_count for volume metrics. Never claim a column total the stats
+  don't show.
+- In data_quality_notes, explicitly call out:
+  * any high_null_columns (and note they were KEPT, not dropped)
+  * any category_merges that were applied (typo/case fixes)
+  * any negative_in_positive_cols or zero_in_positive_cols (suspect data)
+  * any group_tests that returned non-significant p-values
+    (ranking is within noise)
+- Produce 4-6 KPI cards.
 - SQL must be Snowflake-compatible and assume the table is named `dataset`.
-- Respond with ONLY the JSON object, no markdown fences, no commentary.
+- Respond with ONLY the JSON object, no markdown fences.
 """
 
 
@@ -329,10 +408,13 @@ def _safe_json_extract(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
-def _build_prompt(profile: dict, mode: str, custom: str, benchmarks: list) -> str:
+def _build_prompt(profile: dict, mode: str, custom: str, benchmarks: list,
+                  grounded: dict | None = None, clean_summary: dict | None = None) -> str:
     tpl = TEMPLATES.get(mode, TEMPLATES["general"])
     return ANALYSIS_PROMPT.format(
-        profile_json=json.dumps(profile, default=str)[:12000],
+        profile_json=json.dumps(profile, default=str)[:10000],
+        stats_json=json.dumps(grounded or {}, default=str)[:8000],
+        clean_json=json.dumps(clean_summary or {}, default=str)[:4000],
         mode=tpl["name"],
         kpis=tpl["kpis"],
         guidance=tpl["guidance"],
@@ -390,9 +472,11 @@ def call_gemini(api_key: str, prompt: str, strict: bool = False) -> str:
 
 
 def analyze(provider: str, api_key: str, profile: dict, mode: str,
-            custom: str, benchmarks: list) -> dict:
+            custom: str, benchmarks: list,
+            grounded: dict | None = None,
+            clean_summary: dict | None = None) -> dict:
     """Unified AI provider call with one retry on malformed JSON."""
-    prompt = _build_prompt(profile, mode, custom, benchmarks)
+    prompt = _build_prompt(profile, mode, custom, benchmarks, grounded, clean_summary)
     caller = {"openai": call_openai, "anthropic": call_anthropic, "gemini": call_gemini}.get(provider)
     if not caller:
         raise ValueError(f"Unknown provider: {provider}")
@@ -485,8 +569,197 @@ def build_chart(df: pd.DataFrame, spec: dict) -> dict | None:
         return None
 
 
+AMOUNT_HINTS = ("revenue", "sales", "amount", "profit", "spend", "cost",
+                "price", "total", "value", "gmv")
+COUNT_HINTS = ("qty", "quantity", "units", "count", "orders", "sessions",
+               "users", "clicks", "impressions", "views")
+
+
+def _is_amount_col(name: str) -> bool:
+    n = str(name).lower()
+    return any(h in n for h in AMOUNT_HINTS)
+
+
+def _is_count_col(name: str) -> bool:
+    n = str(name).lower()
+    return any(h in n for h in COUNT_HINTS)
+
+
+def _to_fig_dict(fig) -> dict:
+    return json.loads(json.dumps(fig.to_dict(), cls=PlotlyJSONEncoder))
+
+
+def build_auto_charts(df: pd.DataFrame) -> list[dict]:
+    """Build a curated, code-deterministic set of charts.
+
+    Guarantees:
+    - Time series plots COUNT of rows per period (never raw id values).
+    - Categorical breakdowns use horizontal bar of mean/median or box plots,
+      not stacked histograms with 20 colors.
+    - IDs and obvious key columns are excluded from numeric summarization.
+    - NaN rows are excluded per-chart (not globally), preserving each
+      column's legitimate sample size.
+    """
+    charts: list[dict] = []
+    date_cols = df.select_dtypes(include=["datetime64[ns]", "datetime64"]).columns.tolist()
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    bool_cols = df.select_dtypes(include=["bool"]).columns.tolist()
+    id_cols = set(_detect_id_columns(df))
+    # Exclude ID columns from numeric summarization (they're not metrics).
+    measure_cols = [c for c in numeric_cols if c not in id_cols]
+    # Amount-like and count-like measures get preferential treatment.
+    amount_cols = [c for c in measure_cols if _is_amount_col(c)]
+    count_cols = [c for c in measure_cols if _is_count_col(c)]
+
+    # Low-cardinality categoricals = good breakdown dimensions.
+    cat_cols = []
+    for c in df.columns:
+        if c in id_cols:
+            continue
+        if df[c].dtype == object or c in bool_cols:
+            nn = df[c].dropna()
+            if 2 <= nn.nunique() <= 30:
+                cat_cols.append(c)
+
+    # ---- 1. Orders per month (count of rows) -------------------------------
+    if date_cols:
+        dcol = date_cols[0]
+        d = df[[dcol]].dropna().copy()
+        if len(d) >= 5:
+            d["_period"] = d[dcol].dt.to_period("M").dt.to_timestamp()
+            g = d.groupby("_period").size().reset_index(name="Rows")
+            fig = px.bar(g, x="_period", y="Rows")
+            fig.update_traces(marker_color=PALETTE[0])
+            fig = _fig_layout(fig, f"Row volume per month — based on {dcol}")
+            fig.update_xaxes(title_text=dcol)
+            fig.update_yaxes(title_text="Count of rows")
+            charts.append({
+                "title": f"Row volume per month ({dcol})",
+                "insight": (
+                    f"Counts the number of rows falling in each month of "
+                    f"{dcol}. Range: {d[dcol].min().date()} to "
+                    f"{d[dcol].max().date()}. Peak month: "
+                    f"{g.loc[g['Rows'].idxmax(), '_period'].strftime('%Y-%m')} "
+                    f"with {int(g['Rows'].max())} rows."
+                ),
+                "figure": _to_fig_dict(fig),
+            })
+
+    # ---- 2. Primary amount metric over time (sum per month) ----------------
+    if date_cols and amount_cols:
+        dcol = date_cols[0]
+        acol = amount_cols[0]
+        d = df[[dcol, acol]].dropna().copy()
+        if len(d) >= 5:
+            d["_period"] = d[dcol].dt.to_period("M").dt.to_timestamp()
+            g = d.groupby("_period")[acol].sum().reset_index()
+            fig = px.line(g, x="_period", y=acol, markers=True)
+            fig.update_traces(line=dict(color=PALETTE[0], width=2.5))
+            fig = _fig_layout(fig, f"{acol} over time (monthly sum)")
+            fig.update_xaxes(title_text=dcol)
+            fig.update_yaxes(title_text=f"Sum of {acol}")
+            top_period = g.loc[g[acol].idxmax(), "_period"].strftime("%Y-%m")
+            charts.append({
+                "title": f"{acol} over time",
+                "insight": (
+                    f"Monthly sum of {acol}. Total across range: "
+                    f"{g[acol].sum():,.2f}. Peak month: {top_period} "
+                    f"({g[acol].max():,.2f})."
+                ),
+                "figure": _to_fig_dict(fig),
+            })
+
+    # ---- 3. Top-N bar: primary amount by each low-card categorical ---------
+    primary_amount = amount_cols[0] if amount_cols else (count_cols[0] if count_cols else None)
+    for cat in cat_cols[:4]:
+        if primary_amount is None:
+            # Fall back to simple counts.
+            g = df[cat].value_counts(dropna=True).head(15).reset_index()
+            g.columns = [cat, "Rows"]
+            fig = px.bar(g, x="Rows", y=cat, orientation="h", color=cat,
+                         color_discrete_sequence=PALETTE)
+            fig = _fig_layout(fig, f"Row count by {cat}")
+            fig.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False)
+            charts.append({
+                "title": f"Row count by {cat}",
+                "insight": f"Counts per {cat}. Top: {g.iloc[0][cat]} ({int(g.iloc[0]['Rows'])} rows).",
+                "figure": _to_fig_dict(fig),
+            })
+            continue
+        d = df[[cat, primary_amount]].dropna()
+        if len(d) < 3 or d[cat].nunique() < 2:
+            continue
+        g = d.groupby(cat)[primary_amount].agg(["sum", "mean", "count"]).reset_index()
+        g = g.sort_values("sum", ascending=False).head(15)
+        fig = px.bar(g, x="sum", y=cat, orientation="h", color=cat,
+                     color_discrete_sequence=PALETTE,
+                     hover_data={"mean": ":,.2f", "count": True})
+        fig = _fig_layout(fig, f"Total {primary_amount} by {cat}")
+        fig.update_layout(yaxis={"categoryorder": "total ascending"}, showlegend=False)
+        fig.update_xaxes(title_text=f"Sum of {primary_amount}")
+        top = g.iloc[0]
+        charts.append({
+            "title": f"{primary_amount} by {cat}",
+            "insight": (
+                f"Top {cat}: {top[cat]} — total {top['sum']:,.2f} "
+                f"(mean {top['mean']:,.2f} across {int(top['count'])} rows)."
+            ),
+            "figure": _to_fig_dict(fig),
+        })
+
+    # ---- 4. Box plot: primary amount distribution by top categorical -------
+    if primary_amount and cat_cols:
+        cat = cat_cols[0]
+        d = df[[cat, primary_amount]].dropna()
+        if d[cat].nunique() <= 20 and len(d) >= 10:
+            fig = px.box(d, x=cat, y=primary_amount, color=cat,
+                         color_discrete_sequence=PALETTE, points="outliers")
+            fig = _fig_layout(fig, f"{primary_amount} distribution by {cat}")
+            fig.update_layout(showlegend=False)
+            charts.append({
+                "title": f"{primary_amount} distribution by {cat}",
+                "insight": (
+                    f"Box plot of {primary_amount} for each {cat}. Compare "
+                    f"medians and spread — wider boxes indicate higher "
+                    f"variance within that {cat}."
+                ),
+                "figure": _to_fig_dict(fig),
+            })
+
+    # ---- 5. Scatter: the two numerics with highest abs correlation ---------
+    if len(measure_cols) >= 2:
+        d = df[measure_cols].dropna()
+        if len(d) >= 10:
+            corr = d.corr(numeric_only=True).abs()
+            np.fill_diagonal(corr.values, 0)
+            if corr.values.size and np.isfinite(corr.values).any():
+                idx = np.unravel_index(np.nanargmax(corr.values), corr.shape)
+                xcol, ycol = corr.columns[idx[0]], corr.columns[idx[1]]
+                r_val = df[[xcol, ycol]].corr().iloc[0, 1]
+                fig = px.scatter(df.dropna(subset=[xcol, ycol]),
+                                 x=xcol, y=ycol, opacity=0.6,
+                                 color_discrete_sequence=[PALETTE[0]],
+                                 trendline=None)
+                fig = _fig_layout(fig, f"{ycol} vs {xcol} (r = {r_val:.3f})")
+                charts.append({
+                    "title": f"{ycol} vs {xcol}",
+                    "insight": (
+                        f"Pearson r = {r_val:.3f} between {xcol} and {ycol}. "
+                        f"Values near 0 indicate no linear relationship; "
+                        f"values near ±1 indicate strong linear relationship."
+                    ),
+                    "figure": _to_fig_dict(fig),
+                })
+
+    return charts
+
+
 def correlation_heatmap(df: pd.DataFrame) -> dict | None:
     numeric = df.select_dtypes(include=[np.number])
+    # Exclude ID-like columns — correlations with an auto-incrementing
+    # primary key are meaningless and crowd the heatmap.
+    id_cols = set(_detect_id_columns(df))
+    numeric = numeric[[c for c in numeric.columns if c not in id_cols]]
     if numeric.shape[1] < 2:
         return None
     corr = numeric.corr().round(3)
@@ -499,17 +772,23 @@ def correlation_heatmap(df: pd.DataFrame) -> dict | None:
 
 
 def time_series_trend(df: pd.DataFrame) -> dict | None:
-    date_cols = df.select_dtypes(include=["datetime64[ns]"]).columns.tolist()
-    numeric = df.select_dtypes(include=[np.number]).columns.tolist()
-    if not date_cols or not numeric:
+    """Row volume per week using the first date column. Guaranteed count,
+    never id values."""
+    date_cols = df.select_dtypes(include=["datetime64[ns]", "datetime64"]).columns.tolist()
+    if not date_cols:
         return None
-    dc, nc = date_cols[0], numeric[0]
-    d = df[[dc, nc]].dropna().sort_values(dc)
+    dc = date_cols[0]
+    d = df[[dc]].dropna().copy()
     if len(d) < 5:
         return None
-    fig = px.line(d, x=dc, y=nc, markers=True, title=f"{nc} trend over {dc}")
-    fig = _fig_layout(fig, f"Time Series — {nc} over {dc}")
-    return json.loads(json.dumps(fig.to_dict(), cls=PlotlyJSONEncoder))
+    d["_week"] = d[dc].dt.to_period("W").dt.start_time
+    g = d.groupby("_week").size().reset_index(name="Rows")
+    fig = px.line(g, x="_week", y="Rows", markers=True)
+    fig.update_traces(line=dict(color=PALETTE[0], width=2.2))
+    fig = _fig_layout(fig, f"Row volume per week — {dc}")
+    fig.update_xaxes(title_text=dc)
+    fig.update_yaxes(title_text="Count of rows")
+    return _to_fig_dict(fig)
 
 
 def detect_outliers(df: pd.DataFrame) -> pd.DataFrame:
@@ -529,6 +808,91 @@ def detect_outliers(df: pd.DataFrame) -> pd.DataFrame:
     if not out.empty:
         out["_outlier_cols"] = reasons[mask].str.strip()
     return out.head(100)
+
+
+def compute_grounded_stats(df: pd.DataFrame) -> dict:
+    """Compute authoritative summary stats the AI narrative MUST reference.
+
+    The AI is given these numbers so its prose can be checked against the
+    data rather than fabricating totals. All calculations skip NaN (pandas
+    default) — we never fill nulls upstream.
+    """
+    id_cols = set(_detect_id_columns(df))
+    numeric = [c for c in df.select_dtypes(include=[np.number]).columns if c not in id_cols]
+    date_cols = df.select_dtypes(include=["datetime64[ns]", "datetime64"]).columns.tolist()
+
+    stats_out: dict = {
+        "row_count": int(len(df)),
+        "column_count": int(len(df.columns)),
+        "id_columns": list(id_cols),
+        "numeric_columns": numeric,
+        "date_columns": date_cols,
+        "date_range": None,
+        "totals": {},          # sum/mean/median per measure column
+        "top_categorical": {}, # {col: [(value, count), ...]}
+        "group_tests": [],     # ANOVA results per category x primary metric
+    }
+
+    if date_cols:
+        dc = date_cols[0]
+        d = df[dc].dropna()
+        if len(d):
+            stats_out["date_range"] = {
+                "column": dc,
+                "start": str(d.min().date()),
+                "end": str(d.max().date()),
+                "span_days": int((d.max() - d.min()).days),
+            }
+
+    for c in numeric:
+        col = df[c].dropna()
+        if col.empty:
+            continue
+        stats_out["totals"][c] = {
+            "n": int(col.size),
+            "sum": float(col.sum()),
+            "mean": float(col.mean()),
+            "median": float(col.median()),
+            "std": float(col.std(ddof=1)) if col.size > 1 else 0.0,
+            "min": float(col.min()),
+            "max": float(col.max()),
+            "negative": int((col < 0).sum()),
+            "zero": int((col == 0).sum()),
+        }
+
+    # Top categorical values and ANOVA across them for the primary metric.
+    primary = next((c for c in numeric if _is_amount_col(c)),
+                   next((c for c in numeric if _is_count_col(c)),
+                        numeric[0] if numeric else None))
+    for c in df.columns:
+        if c in id_cols or not (df[c].dtype == object or pd.api.types.is_bool_dtype(df[c])):
+            continue
+        nn = df[c].dropna()
+        if not (2 <= nn.nunique() <= 30):
+            continue
+        vc = nn.value_counts().head(10)
+        stats_out["top_categorical"][c] = [[str(k), int(v)] for k, v in vc.items()]
+
+        if primary and primary in df.columns:
+            groups = [
+                df.loc[df[c] == g, primary].dropna().values
+                for g in nn.unique() if len(df.loc[df[c] == g, primary].dropna()) >= 3
+            ]
+            if len(groups) >= 2:
+                try:
+                    f_stat, p_val = stats.f_oneway(*groups)
+                    if np.isfinite(p_val):
+                        stats_out["group_tests"].append({
+                            "category": c,
+                            "metric": primary,
+                            "n_groups": len(groups),
+                            "f_stat": round(float(f_stat), 4),
+                            "p_value": round(float(p_val), 5),
+                            "significant_alpha_05": bool(p_val < 0.05),
+                        })
+                except Exception:
+                    pass
+    return stats_out
 
 
 def run_ab_significance(df: pd.DataFrame) -> dict | None:
@@ -733,21 +1097,18 @@ def api_analyze():
         # 2. Profile
         profile = profile_dataframe(df)
 
-        # 3. AI analysis
-        ai = analyze(provider, api_key, profile, mode, custom, benchmarks)
+        # 3. Compute authoritative summary stats BEFORE the AI runs. These
+        # numbers are the ground truth the narrative must reference.
+        grounded = compute_grounded_stats(df)
 
-        # 4. Build charts
-        charts = []
-        for spec in ai.get("analyses", []):
-            fig = build_chart(df, spec)
-            if fig:
-                charts.append({
-                    "title": spec.get("title"),
-                    "insight": spec.get("insight", ""),
-                    "figure": fig,
-                })
+        # 4. AI narrative — no longer proposes charts, only writes prose.
+        ai = analyze(provider, api_key, profile, mode, custom, benchmarks,
+                     grounded=grounded, clean_summary=clean_summary)
 
-        # 5. Auto features
+        # 5. Build charts deterministically in code (guaranteed-correct).
+        charts = build_auto_charts(df)
+
+        # 6. Auto features
         corr = correlation_heatmap(df)
         ts = time_series_trend(df)
         outliers_df = detect_outliers(df)
@@ -800,6 +1161,7 @@ def api_analyze():
             },
             "sql_queries": sql_queries,
             "benchmarks": benchmarks,
+            "grounded_stats": grounded,
             "preview": df.head(200).astype(str).to_dict(orient="records"),
         })
     except Exception as e:
@@ -959,11 +1321,15 @@ def export_excel():
     r = 3
     for key, label in [
         ("duplicates_removed", "Duplicate rows removed"),
+        ("duplicate_key", "Deduplication key"),
+        ("id_columns", "Primary-key-like columns"),
         ("whitespace_columns_fixed", "Columns with whitespace trimmed"),
-        ("casing_normalized", "Columns with normalized casing"),
         ("types_inferred", "Columns with type inference applied"),
-        ("nulls_filled", "Nulls filled"),
-        ("nulls_dropped", "Columns dropped (>50% null)"),
+        ("category_merges", "Categorical labels merged (typo/case)"),
+        ("high_null_columns", "High-null columns (>=30% null, KEPT)"),
+        ("negative_in_positive_cols", "Negative values in expected-positive columns"),
+        ("zero_in_positive_cols", "Zero values in expected-positive columns"),
+        ("rows_with_any_null", "Rows with at least one null"),
     ]:
         val = clean.get(key)
         ws3.cell(row=r, column=1, value=label).font = Font(bold=True)
@@ -1067,10 +1433,14 @@ def export_pdf():
         clean_rows = [
             ["Original shape", str(clean.get("original_shape"))],
             ["Cleaned shape", str(clean.get("cleaned_shape"))],
-            ["Duplicates removed", str(clean.get("duplicates_removed", 0))],
+            ["Duplicates removed", f"{clean.get('duplicates_removed', 0)} (key: {clean.get('duplicate_key', '—')})"],
+            ["ID columns", ", ".join(clean.get("id_columns", [])) or "—"],
             ["Types inferred", json.dumps(clean.get("types_inferred", {}))[:400]],
-            ["Nulls filled", json.dumps(clean.get("nulls_filled", {}))[:400]],
-            ["Columns dropped", json.dumps(clean.get("nulls_dropped", {}))[:400]],
+            ["Category merges", json.dumps(clean.get("category_merges", {}))[:400]],
+            ["High-null columns (kept)", json.dumps(clean.get("high_null_columns", {}))[:400]],
+            ["Negative in positive cols", json.dumps(clean.get("negative_in_positive_cols", {}))[:400]],
+            ["Zero in positive cols", json.dumps(clean.get("zero_in_positive_cols", {}))[:400]],
+            ["Rows with any null", str(clean.get("rows_with_any_null", 0))],
         ]
         t = Table(clean_rows, colWidths=[1.8 * inch, 5.0 * inch])
         t.setStyle(TableStyle([

@@ -270,6 +270,27 @@ function renderDashboard(d) {
     `;
   } else { abCard.classList.add("hidden"); }
 
+  // Group significance tests (one-way ANOVA) — checks whether differences
+  // between the top categorical groups are real vs. noise.
+  const gtCard = $("#grouptests-card");
+  const gtests = d.grounded_stats?.group_tests || [];
+  if (gtests.length) {
+    gtCard.classList.remove("hidden");
+    $("#grouptests-body").innerHTML = `
+      <p class="muted small">Tests whether mean <b>${esc(gtests[0].metric)}</b> differs across groups. p &lt; 0.05 ⇒ difference unlikely to be noise.</p>
+      <div class="ab-metrics" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
+        ${gtests.map(t => `
+          <div class="ab-metric">
+            <b>${esc(t.category)} (${t.n_groups} groups)</b>
+            F = ${t.f_stat} · p = ${t.p_value}
+            <span style="display:inline-block; margin-top:4px; color: ${t.significant_alpha_05 ? 'var(--success)' : 'var(--warn)'}">
+              ${t.significant_alpha_05 ? '✓ Significant at α=0.05' : '⚠ Not significant — ranking may be noise'}
+            </span>
+          </div>`).join('')}
+      </div>
+    `;
+  } else { gtCard.classList.add("hidden"); }
+
   // Outliers
   const olCard = $("#outlier-card");
   if (d.outliers && d.outliers.count > 0) {
@@ -294,15 +315,19 @@ function renderDashboard(d) {
 function renderClean(c) {
   if (!c) return;
   const box = $("#clean-body");
+  const dedupLabel = c.duplicate_key ? `${c.duplicates_removed || 0} (key: ${c.duplicate_key})` : (c.duplicates_removed || 0);
   const rows = [
     ["Original shape", `${c.original_shape?.[0]} × ${c.original_shape?.[1]}`],
     ["Cleaned shape", `${c.cleaned_shape?.[0]} × ${c.cleaned_shape?.[1]}`],
-    ["Duplicates removed", c.duplicates_removed || 0],
+    ["Duplicates removed", dedupLabel],
+    ["ID columns", pillList(c.id_columns)],
     ["Whitespace trimmed in", pillList(c.whitespace_columns_fixed)],
-    ["Casing normalized", pillList(c.casing_normalized)],
     ["Types inferred", pillMap(c.types_inferred)],
-    ["Nulls filled", pillMap(c.nulls_filled)],
-    ["Columns dropped (>50% null)", pillMap(c.nulls_dropped)],
+    ["Category merges (typos/case)", pillMergeMap(c.category_merges)],
+    ["High-null columns (kept, not dropped)", pillMap(c.high_null_columns)],
+    ["Negative values in positive-expected cols", pillMap(c.negative_in_positive_cols)],
+    ["Zero values in positive-expected cols", pillMap(c.zero_in_positive_cols)],
+    ["Rows with any null", c.rows_with_any_null || 0],
   ];
   box.innerHTML = rows.map(([l, v]) =>
     `<div class="clean-row"><div class="label">${l}</div><div class="value">${v || '—'}</div></div>`
@@ -316,6 +341,13 @@ function pillMap(obj) {
   if (!obj || !Object.keys(obj).length) return "";
   return Object.entries(obj).map(([k, v]) =>
     `<span class="pill">${esc(k)}: ${esc(String(v))}</span>`).join("");
+}
+function pillMergeMap(obj) {
+  if (!obj || !Object.keys(obj).length) return "";
+  return Object.entries(obj).map(([col, merges]) => {
+    const pairs = Object.entries(merges || {}).map(([a, b]) => `${a} → ${b}`).join(", ");
+    return `<span class="pill">${esc(col)}: ${esc(pairs)}</span>`;
+  }).join("");
 }
 
 function renderCharts(charts, benchmarks) {
