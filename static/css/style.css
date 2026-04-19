@@ -7,23 +7,23 @@
 :root {
   color-scheme: light;
 
-  /* Warm paper palette */
-  --paper:       #F6F1E7;   /* page background — warm cream */
-  --paper-deep:  #EFE8D8;   /* subtle depth */
-  --paper-soft:  #FBF7EE;
-  --ink:         #1F1B17;   /* primary text — warm near-black */
-  --ink-muted:   #5B5349;   /* secondary */
-  --ink-dim:     #8A8172;   /* tertiary */
-  --line:        #E6DFCF;
-  --line-strong: #D3CAB6;
-  --surface:     #FDFBF5;   /* cards — slightly warmer than paper */
-  --surface-2:   #F6F1E1;
+  /* Cool neutral palette */
+  --paper:       #F4F7F4;   /* page background — soft green-tinted white */
+  --paper-deep:  #E8EEE8;
+  --paper-soft:  #FAFCFA;
+  --ink:         #121815;   /* primary text */
+  --ink-muted:   #4B5650;   /* secondary */
+  --ink-dim:     #7E887F;   /* tertiary */
+  --line:        #E1E7E2;
+  --line-strong: #CBD4CC;
+  --surface:     #FFFFFF;
+  --surface-2:   #F7FAF7;
 
-  /* Terracotta accent — Claude signature */
-  --accent:      #C0502D;
-  --accent-600:  #A6432A;
-  --accent-700:  #853425;
-  --accent-soft: #F7E6D9;
+  /* Emerald accent */
+  --accent:      #15803D;
+  --accent-600:  #166534;
+  --accent-700:  #14532D;
+  --accent-soft: #DCFCE7;
 
   /* Semantic */
   --success: #4E7C4A;
@@ -31,9 +31,9 @@
   --danger:  #B53A2C;
 
   /* Shadows — warm, soft */
-  --shadow-sm: 0 1px 2px rgba(60, 40, 20, 0.05);
-  --shadow:    0 1px 2px rgba(60, 40, 20, 0.06), 0 8px 24px rgba(60, 40, 20, 0.07);
-  --shadow-lg: 0 10px 30px rgba(60, 40, 20, 0.10), 0 30px 60px rgba(60, 40, 20, 0.08);
+  --shadow-sm: 0 1px 2px rgba(20, 32, 22, 0.05);
+  --shadow:    0 1px 2px rgba(20, 32, 22, 0.06), 0 8px 24px rgba(20, 32, 22, 0.07);
+  --shadow-lg: 0 10px 30px rgba(20, 32, 22, 0.10), 0 30px 60px rgba(20, 32, 22, 0.08);
 
   --radius:    12px;
   --radius-lg: 18px;
@@ -59,9 +59,9 @@ html, body {
 
 body {
   background-image:
-    radial-gradient(900px 420px at 90% -150px, rgba(192, 80, 45, 0.10), transparent 60%),
-    radial-gradient(700px 380px at -10% 10%, rgba(192, 80, 45, 0.05), transparent 60%),
-    radial-gradient(1000px 500px at 50% 120%, rgba(133, 52, 37, 0.05), transparent 60%);
+    radial-gradient(900px 420px at 90% -150px, rgba(21, 128, 61, 0.10), transparent 60%),
+    radial-gradient(700px 380px at -10% 10%, rgba(21, 128, 61, 0.05), transparent 60%),
+    radial-gradient(1000px 500px at 50% 120%, rgba(20, 83, 45, 0.05), transparent 60%);
   background-attachment: fixed;
   position: relative;
 }
@@ -96,7 +96,7 @@ h1, h2, h3, h4 {
 .link { color: var(--accent); font-weight: 500; }
 code {
   font-family: var(--font-mono); font-size: 0.88em;
-  background: rgba(192, 80, 45, 0.09); color: var(--accent-700);
+  background: rgba(21, 128, 61, 0.09); color: var(--accent-700);
   padding: 1px 6px; border-radius: 5px;
 }
 
@@ -119,7 +119,7 @@ input, select, textarea {
 input:hover, select:hover, textarea:hover { border-color: var(--ink-dim); }
 input:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 4px rgba(192, 80, 45, 0.14);
+  box-shadow: 0 0 0 4px rgba(21, 128, 61, 0.14);
   background: var(--paper-soft);
 }
 input::placeholder, textarea::placeholder { color: var(--ink-dim); opacity: 1; }
@@ -147,7 +147,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .btn-primary:hover {
   background: #2C2620; border-color: #2C2620;
   transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 14px rgba(60,40,20,0.2);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 14px rgba(20, 32, 22,0.2);
 }
 .btn-primary:active { transform: translateY(0); }
 .btn-primary:disabled {
@@ -160,7 +160,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .btn-ghost:hover { background: var(--surface-2); border-color: var(--ink); }
 .btn-accent {
   background: var(--accent); color: #FFFFFF; border-color: var(--accent-600);
-  box-shadow: 0 1px 2px rgba(192, 80, 45, 0.28), inset 0 1px 0 rgba(255,255,255,0.18);
+  box-shadow: 0 1px 2px rgba(21, 128, 61, 0.28), inset 0 1px 0 rgba(255,255,255,0.18);
 }
 .btn-accent:hover { background: var(--accent-600); border-color: var(--accent-700); }
 .btn-lg { padding: 15px 26px; font-size: 15.5px; font-weight: 600; }
@@ -187,12 +187,12 @@ textarea { resize: vertical; line-height: 1.6; }
   width: 32px; height: 32px;
   border-radius: 9px;
   background:
-    radial-gradient(circle at 30% 30%, #F7E6D9 0%, transparent 45%),
-    linear-gradient(135deg, #D9643C 0%, var(--accent) 45%, var(--accent-700) 100%);
+    radial-gradient(circle at 30% 30%, #DCFCE7 0%, transparent 45%),
+    linear-gradient(135deg, #22C55E 0%, var(--accent) 45%, var(--accent-700) 100%);
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.22),
     inset 0 -2px 4px rgba(0,0,0,0.10),
-    0 2px 6px rgba(192, 80, 45, 0.32);
+    0 2px 6px rgba(21, 128, 61, 0.32);
   flex-shrink: 0;
   position: relative;
 }
@@ -221,7 +221,7 @@ textarea { resize: vertical; line-height: 1.6; }
   margin-bottom: 22px;
 }
 .hero-title {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-weight: 400;
   font-size: clamp(44px, 6.4vw, 72px);
   line-height: 1.03;
@@ -230,9 +230,9 @@ textarea { resize: vertical; line-height: 1.6; }
   margin-bottom: 20px;
 }
 .hero-title em {
-  font-style: italic;
+  
   color: var(--accent);
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
 }
 .hero-sub {
   font-family: var(--font-sans);
@@ -329,7 +329,7 @@ textarea { resize: vertical; line-height: 1.6; }
   display: flex; align-items: center; justify-content: center;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid rgba(192, 80, 45, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.18);
   border-radius: 14px;
 }
 .upload-title { font-weight: 500; color: var(--ink); margin-bottom: 4px; font-size: 15.5px; }
@@ -350,7 +350,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .mode-card em { font-size: 12px; color: var(--ink-muted); font-style: normal; line-height: 1.4; }
 .mode-card:has(input:checked) {
   border-color: var(--accent); background: var(--accent-soft);
-  box-shadow: 0 0 0 3px rgba(192, 80, 45, 0.12);
+  box-shadow: 0 0 0 3px rgba(21, 128, 61, 0.12);
 }
 .mode-card:has(input:checked) b { color: var(--accent-700); }
 
@@ -376,7 +376,7 @@ textarea { resize: vertical; line-height: 1.6; }
   display: flex; gap: 22px; justify-content: center;
   margin-top: 18px; padding: 16px 20px;
   background: var(--accent-soft);
-  border: 1px solid rgba(192, 80, 45, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.18);
   border-radius: var(--radius);
   color: var(--ink-muted); font-size: 13.5px;
 }
@@ -414,8 +414,8 @@ textarea { resize: vertical; line-height: 1.6; }
   color: var(--ink);
 }
 .card.callout {
-  background: linear-gradient(135deg, var(--accent-soft) 0%, #FDF1E4 100%);
-  border-color: rgba(192, 80, 45, 0.22);
+  background: linear-gradient(135deg, var(--accent-soft) 0%, #ECFDF5 100%);
+  border-color: rgba(21, 128, 61, 0.22);
 }
 .span-12 { grid-column: span 12; }
 .span-6 { grid-column: span 6; }
@@ -434,7 +434,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .card-label-row .card-label { margin-bottom: 0; }
 
 .exec-text {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 22px;
   line-height: 1.45;
   letter-spacing: -0.015em;
@@ -457,7 +457,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 .kpi::before {
   content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-  background: linear-gradient(90deg, var(--accent), #E07B4A);
+  background: linear-gradient(90deg, var(--accent), #22C55E);
 }
 .kpi-label {
   font-family: var(--font-sans);
@@ -465,7 +465,7 @@ textarea { resize: vertical; line-height: 1.6; }
   color: var(--ink-dim); font-weight: 600; margin-bottom: 10px;
 }
 .kpi-value {
-  font-family: var(--font-serif);
+  font-family: var(--font-sans);
   font-size: 36px; font-weight: 400; color: var(--ink);
   letter-spacing: -0.025em; line-height: 1.05;
 }
@@ -505,7 +505,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .pill {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
   background: var(--accent-soft); color: var(--accent-700); font-size: 12px; font-weight: 500;
-  margin: 2px; border: 1px solid rgba(192, 80, 45, 0.18);
+  margin: 2px; border: 1px solid rgba(21, 128, 61, 0.18);
 }
 
 .simple-list { margin: 0; padding-left: 20px; color: var(--ink); }
@@ -542,7 +542,7 @@ textarea { resize: vertical; line-height: 1.6; }
   position: fixed; right: 0; top: 0; bottom: 0;
   width: 540px; max-width: 92vw;
   background: var(--surface);
-  box-shadow: -16px 0 48px rgba(60, 40, 20, 0.18);
+  box-shadow: -16px 0 48px rgba(20, 32, 22, 0.18);
   z-index: 100;
   display: flex; flex-direction: column;
   border-left: 1px solid var(--line);
@@ -604,7 +604,7 @@ textarea { resize: vertical; line-height: 1.6; }
   position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: 0 30px 80px rgba(60, 40, 20, 0.3); z-index: 200;
+  box-shadow: 0 30px 80px rgba(20, 32, 22, 0.3); z-index: 200;
   width: 680px; max-width: 92vw; max-height: 85vh; overflow: auto;
   color: var(--ink);
 }
@@ -612,7 +612,7 @@ textarea { resize: vertical; line-height: 1.6; }
 .popup-inner .btn-close { position: absolute; top: 14px; right: 16px; }
 .popup-inner h3 {
   margin-bottom: 8px; color: var(--ink); font-size: 24px;
-  font-family: var(--font-serif); font-weight: 400; letter-spacing: -0.02em;
+  font-family: var(--font-sans); font-weight: 400; letter-spacing: -0.02em;
 }
 
 .overlay {
@@ -642,7 +642,7 @@ textarea { resize: vertical; line-height: 1.6; }
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent);
   background: var(--accent-soft);
-  border: 1px solid rgba(192, 80, 45, 0.18);
+  border: 1px solid rgba(21, 128, 61, 0.18);
   margin-bottom: 16px;
 }
 .feature h3 {

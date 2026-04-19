@@ -63,8 +63,8 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 STORE: dict = {}
 STORE_LOCK = Lock()
 
-ACCENT = "#C0502D"  # Terracotta — Claude design accent
-PALETTE = ["#C0502D", "#E07B4A", "#853425", "#8A8172", "#B07A1F", "#4E7C4A", "#C9A66B", "#1F1B17"]
+ACCENT = "#15803D"  # Emerald-700
+PALETTE = ["#15803D", "#22C55E", "#14532D", "#4E7C4A", "#65A30D", "#0D9488", "#4B5650", "#121815"]
 
 
 # -----------------------------------------------------------------------------
@@ -914,7 +914,7 @@ def export_excel():
     ws = wb.active
     ws.title = "Summary"
     header_font = Font(bold=True, size=14, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="C0502D")
+    header_fill = PatternFill("solid", fgColor="15803D")
 
     ws["A1"] = "AI Analytics Report"
     ws["A1"].font = Font(bold=True, size=18)
@@ -1080,13 +1080,42 @@ def export_pdf():
         ]))
         story.append(t)
 
-        # Charts — insights only (plotly static export requires kaleido; we list insights)
+        # Charts — embed client-rendered PNGs when available
         story.append(PageBreak())
         story.append(Paragraph("Analyses & Insights", h2))
+
+        def _embed_image(data_url):
+            if not data_url or not data_url.startswith("data:image"):
+                return None
+            try:
+                b64 = data_url.split(",", 1)[1]
+                raw = base64.b64decode(b64)
+                img = RLImage(io.BytesIO(raw), width=6.8 * inch, height=3.83 * inch)
+                img.hAlign = "CENTER"
+                return img
+            except Exception:
+                return None
+
         for c in last.get("charts", []):
             story.append(Paragraph(f"<b>{c.get('title', '')}</b>", body))
+            img = _embed_image(c.get("image"))
+            if img is not None:
+                story.append(Spacer(1, 0.08 * inch))
+                story.append(img)
+            story.append(Spacer(1, 0.08 * inch))
             story.append(Paragraph(c.get("insight", ""), body))
-            story.append(Spacer(1, 0.12 * inch))
+            story.append(Spacer(1, 0.18 * inch))
+
+        corr_img = _embed_image(last.get("correlation_image"))
+        if corr_img is not None:
+            story.append(Paragraph("<b>Correlation heatmap</b>", body))
+            story.append(corr_img)
+            story.append(Spacer(1, 0.18 * inch))
+        ts_img = _embed_image(last.get("timeseries_image"))
+        if ts_img is not None:
+            story.append(Paragraph("<b>Time series overview</b>", body))
+            story.append(ts_img)
+            story.append(Spacer(1, 0.18 * inch))
 
         # Quality + follow-ups
         dq = last.get("ai", {}).get("data_quality_notes", [])

@@ -477,6 +477,25 @@ async function exportFile(kind) {
     return;
   }
   const d = state.lastData;
+
+  // Capture each Plotly chart as a PNG for inclusion in the PDF.
+  async function snapshot(elId) {
+    const el = document.getElementById(elId);
+    if (!el || !window.Plotly) return null;
+    try {
+      return await Plotly.toImage(el, { format: "png", width: 960, height: 540, scale: 2 });
+    } catch (e) { return null; }
+  }
+
+  const chartImages = [];
+  for (let i = 0; i < (d.charts || []).length; i++) {
+    const c = d.charts[i];
+    const png = await snapshot(`chart-${i}`);
+    chartImages.push({ title: c.title || `Chart ${i+1}`, insight: c.insight || "", image: png });
+  }
+  const corrImg = d.correlation ? await snapshot("corr-chart") : null;
+  const tsImg = d.timeseries ? await snapshot("ts-chart") : null;
+
   const payload = {
     rows: state.tableRows,
     columns: state.tableCols,
@@ -489,7 +508,9 @@ async function exportFile(kind) {
         data_quality_notes: d.data_quality_notes || [],
         followup_questions: d.followup_questions || [],
       },
-      charts: (d.charts || []).map(c => ({title: c.title, insight: c.insight})),
+      charts: chartImages,
+      correlation_image: corrImg,
+      timeseries_image: tsImg,
     },
   };
   const url = kind === "excel" ? "/api/export/excel" : "/api/export/pdf";
