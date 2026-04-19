@@ -11,6 +11,8 @@ const state = {
   tableSort: { col: null, dir: 1 },
   apiKey: "",        // kept in JS memory only; sent with each server call
   provider: "",
+  fileBlob: null,    // cached for silent re-upload if server loses state
+  fileName: "",
 };
 
 // ---------------------------------------------------------------------------
@@ -65,17 +67,26 @@ fileInput.addEventListener("change", (e) => {
 async function handleUpload(file) {
   const s = $("#upload-status");
   s.textContent = `Uploading ${file.name}...`; s.className = "status-line";
-  const fd = new FormData();
-  fd.append("file", file);
+  // Cache the raw file locally so we can silently re-upload if the
+  // server loses state (cold start, process restart, etc).
+  state.fileBlob = file;
+  state.fileName = file.name;
   try {
-    const r = await fetch("/api/upload", { method: "POST", body: fd });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || "Upload failed");
+    const j = await uploadBlob(file);
     s.textContent = `✓ ${j.filename} — ${j.rows.toLocaleString()} rows × ${j.cols} columns`;
     s.classList.add("ok");
   } catch (e) {
     s.textContent = e.message; s.classList.add("err");
   }
+}
+
+async function uploadBlob(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch("/api/upload", { method: "POST", body: fd });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Upload failed");
+  return j;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,25 +133,51 @@ async function runAnalysis() {
     value: parseFloat(r.querySelector(".bm-value").value),
   })).filter(b => b.metric && !isNaN(b.value));
 
+  // Be forgiving about setup order: pick up an API key typed into the
+  // input even if the user never pressed Connect.
   if (!state.apiKey) {
-    status.textContent = "Please connect your API key first.";
+    const typed = ($("#api-key").value || "").trim();
+    if (typed) state.apiKey = typed;
+  }
+  if (!state.apiKey) {
+    status.textContent = "Enter your API key first.";
+    status.classList.add("err");
+    btn.disabled = false; prog.classList.add("hidden");
+    return;
+  }
+  if (!state.fileBlob) {
+    status.textContent = "Upload a CSV first.";
     status.classList.add("err");
     btn.disabled = false; prog.classList.add("hidden");
     return;
   }
 
-  try {
-    setStep(2);
+  const doAnalyze = async () => {
     const r = await fetch("/api/analyze", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({mode, custom, benchmarks, api_key: state.apiKey}),
     });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.error || "Analysis failed");
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, body: j };
+  };
+
+  try {
+    setStep(2);
+    let res = await doAnalyze();
+
+    // If server lost the dataset (cold start, restart, new session),
+    // silently re-upload the cached blob and retry once.
+    if (!res.ok && /no dataset/i.test(res.body.error || "")) {
+      status.textContent = "Re-uploading dataset…";
+      try { await uploadBlob(state.fileBlob); } catch (_) {}
+      res = await doAnalyze();
+    }
+
+    if (!res.ok) throw new Error(res.body.error || "Analysis failed");
     setStep(3);
-    state.lastData = j;
-    renderDashboard(j);
+    state.lastData = res.body;
+    renderDashboard(res.body);
     state.analysisReady = true;
     $("#setup-screen").classList.add("hidden");
     $("#dashboard").classList.remove("hidden");
@@ -442,14 +479,22 @@ async function sendChat() {
   inp.value = "";
   addChatMsg("user", q);
   const thinking = addChatMsg("ai", "Thinking...");
-  try {
+  const doChat = async () => {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ question: q, api_key: state.apiKey }),
     });
-    const j = await r.json();
-    thinking.textContent = j.ok ? j.answer : (j.error || "Error");
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, body: j };
+  };
+  try {
+    let res = await doChat();
+    if (!res.ok && /no dataset/i.test(res.body.error || "") && state.fileBlob) {
+      try { await uploadBlob(state.fileBlob); } catch (_) {}
+      res = await doChat();
+    }
+    thinking.textContent = res.body.ok ? res.body.answer : (res.body.error || "Error");
   } catch (e) {
     thinking.textContent = e.message;
   }
