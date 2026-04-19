@@ -63,8 +63,8 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 STORE: dict = {}
 STORE_LOCK = Lock()
 
-ACCENT = "#15803D"  # Emerald-700 accent
-PALETTE = ["#15803D", "#22C55E", "#14532D", "#4C564F", "#65A30D", "#0D9488", "#A98A5E", "#141815"]
+ACCENT = "#C0502D"  # Terracotta — Claude design accent
+PALETTE = ["#C0502D", "#E07B4A", "#853425", "#8A8172", "#B07A1F", "#4E7C4A", "#C9A66B", "#1F1B17"]
 
 
 # -----------------------------------------------------------------------------
@@ -110,51 +110,69 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     df = df.drop_duplicates().reset_index(drop=True)
     summary["duplicates_removed"] = before - len(df)
 
-    # 3. Handle strings: strip whitespace + normalize casing for low-cardinality
+    # 3. Handle strings: strip whitespace + conservative casing normalization.
+    # Only collapse casing when a low-cardinality column has duplicate labels
+    # that differ *only* by case (e.g. "USA" + "usa"). Preserve original
+    # casing otherwise so acronyms and proper nouns (USA, iPhone) survive.
     for col in df.select_dtypes(include=["object"]).columns:
         s = df[col].astype(str).str.strip()
         nunique = s.nunique(dropna=True)
         if 0 < nunique <= max(20, int(len(s) * 0.05)):
-            lower_unique = s.str.lower().nunique(dropna=True)
-            if lower_unique < nunique:
-                s = s.str.title()
+            lower = s.str.lower()
+            if lower.nunique(dropna=True) < nunique:
+                # Canonicalize each label to its most-common original form.
+                canon = (
+                    s.groupby(lower).agg(lambda x: x.value_counts().idxmax())
+                )
+                s = lower.map(canon)
                 summary["casing_normalized"].append(col)
-        df[col] = s.replace({"nan": np.nan, "None": np.nan, "": np.nan})
+        df[col] = s.replace({"nan": np.nan, "None": np.nan, "NaN": np.nan, "": np.nan})
 
-    # 4. Type inference — dates, numbers, booleans
+    # 4. Type inference — booleans (strict), dates (strict), numerics.
     for col in df.columns:
-        if df[col].dtype == object:
-            sample = df[col].dropna().astype(str).head(50)
-            if len(sample) == 0:
-                continue
-            # Boolean
-            bool_vals = {"true", "false", "yes", "no", "y", "n", "0", "1"}
-            if set(sample.str.lower().unique()).issubset(bool_vals) and sample.nunique() <= 2:
-                df[col] = df[col].astype(str).str.lower().map(
-                    {"true": True, "false": False, "yes": True, "no": False,
-                     "y": True, "n": False, "1": True, "0": False}
-                )
-                summary["types_inferred"][col] = "boolean"
-                continue
-            # Date
-            try:
-                parsed = pd.to_datetime(sample, errors="raise", utc=False)
-                df[col] = pd.to_datetime(df[col], errors="coerce")
-                summary["types_inferred"][col] = "datetime"
-                continue
-            except (ValueError, TypeError):
-                pass
-            # Numeric
-            cleaned_num = sample.str.replace(r"[,$%\s]", "", regex=True)
-            try:
-                pd.to_numeric(cleaned_num, errors="raise")
-                df[col] = pd.to_numeric(
-                    df[col].astype(str).str.replace(r"[,$%\s]", "", regex=True),
-                    errors="coerce"
-                )
-                summary["types_inferred"][col] = "numeric"
-            except (ValueError, TypeError):
-                pass
+        if df[col].dtype != object:
+            continue
+        sample = df[col].dropna().astype(str).head(200)
+        if len(sample) == 0:
+            continue
+
+        lower_vals = set(sample.str.lower().str.strip().unique())
+        # Boolean: require textual truthy/falsy tokens — do NOT hijack "0"/"1".
+        bool_textual = {"true", "false", "yes", "no", "t", "f"}
+        if lower_vals.issubset(bool_textual) and 1 <= len(lower_vals) <= 2:
+            df[col] = df[col].astype(str).str.lower().str.strip().map(
+                {"true": True, "false": False, "yes": True, "no": False,
+                 "t": True, "f": False}
+            )
+            summary["types_inferred"][col] = "boolean"
+            continue
+
+        # Date: require ≥85% of non-null values to parse successfully AND
+        # that at least two distinct dates are found (prevents integer IDs
+        # like 20240101 from being interpreted as dates against the user's
+        # intent).
+        try:
+            parsed = pd.to_datetime(sample, errors="coerce", utc=False)
+            ok = parsed.notna().sum()
+            if ok >= 0.85 * len(sample) and parsed.dropna().nunique() >= 2:
+                looks_like_number = sample.str.match(r"^-?\d+(\.\d+)?$").mean() > 0.8
+                if not looks_like_number:
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+                    summary["types_inferred"][col] = "datetime"
+                    continue
+        except (ValueError, TypeError):
+            pass
+
+        # Numeric: strip currency/thousands/percent/whitespace. Track whether
+        # a percent sign was present so we can record it (values like "12%"
+        # become 12.0 — we do NOT divide by 100 to preserve the user's units).
+        stripped = sample.str.replace(r"[,$\s]", "", regex=True).str.rstrip("%")
+        had_percent = sample.str.contains("%").any()
+        numeric_try = pd.to_numeric(stripped, errors="coerce")
+        if numeric_try.notna().sum() >= 0.9 * len(sample):
+            full_stripped = df[col].astype(str).str.replace(r"[,$\s]", "", regex=True).str.rstrip("%")
+            df[col] = pd.to_numeric(full_stripped, errors="coerce")
+            summary["types_inferred"][col] = "numeric (percent)" if had_percent else "numeric"
 
     # 5. Fill / drop nulls
     for col in df.columns:
@@ -170,7 +188,7 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
             df[col] = df[col].fillna(df[col].median())
             summary["nulls_filled"][col] = f"{n_null} filled with median"
         elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].fillna(method="ffill").fillna(method="bfill")
+            df[col] = df[col].ffill().bfill()
             summary["nulls_filled"][col] = f"{n_null} filled via forward/backward fill"
         else:
             mode = df[col].mode()
@@ -869,14 +887,26 @@ Return a JSON object: {{"answer": "your plain-English answer"}}"""
 # -----------------------------------------------------------------------------
 # Exports
 # -----------------------------------------------------------------------------
-@app.route("/api/export/excel", methods=["GET"])
+@app.route("/api/export/excel", methods=["POST", "GET"])
 def export_excel():
+    """Prefers POST body (client-supplied payload, survives server restarts);
+    falls back to server session state if POST body is empty."""
     state = get_state()
-    df = state.get("cleaned_df")
+    body = request.get_json(silent=True) or {}
+
+    df = None
+    if body.get("rows") and body.get("columns"):
+        # Client-supplied cleaned dataset (list of dicts) + column order
+        df = pd.DataFrame(body["rows"], columns=body["columns"])
+    else:
+        df = state.get("cleaned_df")
+
+    last = body.get("last_analysis") or state.get("last_analysis", {})
+    clean = body.get("clean_summary") or state.get("clean_summary", {})
+    filename = body.get("filename") or state.get("filename") or "dataset.csv"
+
     if df is None:
-        return jsonify({"error": "No analysis available"}), 400
-    last = state.get("last_analysis", {})
-    clean = state.get("clean_summary", {})
+        return jsonify({"error": "No analysis data provided. Re-run the analysis first."}), 400
 
     wb = Workbook()
 
@@ -884,11 +914,11 @@ def export_excel():
     ws = wb.active
     ws.title = "Summary"
     header_font = Font(bold=True, size=14, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="4F46E5")
+    header_fill = PatternFill("solid", fgColor="C0502D")
 
     ws["A1"] = "AI Analytics Report"
     ws["A1"].font = Font(bold=True, size=18)
-    ws["A2"] = f"Dataset: {state.get('filename', '—')}"
+    ws["A2"] = f"Dataset: {filename}"
     ws["A3"] = f"Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
 
     ws["A5"] = "Executive Summary"
@@ -950,13 +980,25 @@ def export_excel():
     )
 
 
-@app.route("/api/export/pdf", methods=["GET"])
+@app.route("/api/export/pdf", methods=["POST", "GET"])
 def export_pdf():
+    """Prefers POST body (client payload, survives server restarts);
+    falls back to server session state if body is empty."""
     state = get_state()
-    df = state.get("cleaned_df")
-    last = state.get("last_analysis")
+    body = request.get_json(silent=True) or {}
+
+    df = None
+    if body.get("rows") and body.get("columns"):
+        df = pd.DataFrame(body["rows"], columns=body["columns"])
+    else:
+        df = state.get("cleaned_df")
+
+    last = body.get("last_analysis") or state.get("last_analysis")
+    clean_body = body.get("clean_summary")
+    filename_override = body.get("filename")
+
     if df is None or not last:
-        return jsonify({"error": "No analysis available"}), 400
+        return jsonify({"error": "No analysis data provided. Re-run the analysis first."}), 400
 
     try:
         buf = io.BytesIO()
@@ -983,7 +1025,7 @@ def export_pdf():
         story.append(Spacer(1, 1.5 * inch))
         story.append(Paragraph("AI Analytics Report", title_style))
         story.append(Paragraph(
-            f"Dataset: <b>{state.get('filename', '—')}</b>", body))
+            f"Dataset: <b>{filename_override or state.get('filename', '—')}</b>", body))
         story.append(Paragraph(
             f"Rows: {len(df):,} &nbsp;&nbsp; Columns: {len(df.columns)}", body))
         story.append(Paragraph(
@@ -1021,7 +1063,7 @@ def export_pdf():
 
         # Cleaning report
         story.append(Paragraph("Data Cleaning Report", h2))
-        clean = state.get("clean_summary", {})
+        clean = clean_body or state.get("clean_summary", {})
         clean_rows = [
             ["Original shape", str(clean.get("original_shape"))],
             ["Cleaned shape", str(clean.get("cleaned_shape"))],

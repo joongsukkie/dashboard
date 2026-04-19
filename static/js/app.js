@@ -468,8 +468,56 @@ function addChatMsg(who, text) {
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
-$("#btn-excel").addEventListener("click", () => { window.location.href = "/api/export/excel"; });
-$("#btn-pdf").addEventListener("click", () => { window.location.href = "/api/export/pdf"; });
+$("#btn-excel").addEventListener("click", () => exportFile("excel"));
+$("#btn-pdf").addEventListener("click", () => exportFile("pdf"));
+
+async function exportFile(kind) {
+  if (!state.lastData) {
+    alert("Run an analysis first.");
+    return;
+  }
+  const d = state.lastData;
+  const payload = {
+    rows: state.tableRows,
+    columns: state.tableCols,
+    filename: d.filename || "dataset.csv",
+    clean_summary: d.clean_summary || {},
+    last_analysis: {
+      ai: {
+        executive_summary: d.executive_summary || "",
+        kpi_cards: d.kpi_cards || [],
+        data_quality_notes: d.data_quality_notes || [],
+        followup_questions: d.followup_questions || [],
+      },
+      charts: (d.charts || []).map(c => ({title: c.title, insight: c.insight})),
+    },
+  };
+  const url = kind === "excel" ? "/api/export/excel" : "/api/export/pdf";
+  const ext = kind === "excel" ? "xlsx" : "pdf";
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({error: `HTTP ${r.status}`}));
+      alert(`Export failed: ${j.error || "unknown error"}`);
+      return;
+    }
+    const blob = await r.blob();
+    const dlUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = dlUrl;
+    a.download = `analytics_report_${Date.now()}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(dlUrl);
+  } catch (e) {
+    alert(`Export failed: ${e.message}`);
+  }
+}
 $("#btn-new").addEventListener("click", () => {
   $("#dashboard").classList.add("hidden");
   $("#setup-screen").classList.remove("hidden");
