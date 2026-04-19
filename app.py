@@ -51,8 +51,13 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("analytics-agent")
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(32))
+# Stable secret key so session cookies survive restarts / across workers.
+# If FLASK_SECRET_KEY isn't set, fall back to a random key (dev mode only).
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# SESSION_COOKIE_SECURE is left at default (False) so local HTTP dev works;
+# on HTTPS hosts (Render/Railway) browsers still accept non-Secure cookies.
 
 # In-memory store keyed by session token. Not persisted.
 STORE: dict = {}
@@ -682,9 +687,9 @@ def api_upload():
 def api_analyze():
     state = get_state()
     if "original_df" not in state:
-        return jsonify({"error": "No dataset uploaded"}), 400
+        return jsonify({"error": "No dataset found in this session. Please re-upload your CSV."}), 400
     if "provider" not in state or "api_key" not in state:
-        return jsonify({"error": "AI provider not configured"}), 400
+        return jsonify({"error": "API key not found in this session. Please re-enter your key and click Connect."}), 400
 
     body = request.get_json(silent=True) or {}
     mode = body.get("mode", "general")
