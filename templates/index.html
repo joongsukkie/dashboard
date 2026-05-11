@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light" />
-<title>Dashboard — AI analytics for marketing teams</title>
+<title>ReturnLens — AI returns diagnostic for DTC brands</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
@@ -21,15 +21,15 @@
   <nav class="site-nav">
     <div class="nav-brand">
       <div class="brand-mark small"></div>
-      <span>Dashboard</span>
+      <span>ReturnLens</span>
     </div>
-    <div class="nav-meta muted small">AI analytics for marketing teams</div>
+    <div class="nav-meta muted small">AI returns diagnostic for DTC brands</div>
   </nav>
 
   <div class="hero">
-    <span class="eyebrow">AI Analytics Agent</span>
-    <h1 class="hero-title">Turn any CSV into a <em>living</em> dashboard.</h1>
-    <p class="hero-sub">Upload your data, bring your own AI key, and get a cleaned dataset, interactive charts, SQL, and a board-ready report — in about a minute.</p>
+    <span class="eyebrow">Returns &amp; Review Intelligence</span>
+    <h1 class="hero-title">Find out <em>why</em> customers return your products.</h1>
+    <p class="hero-sub">Upload your orders + reviews. ReturnLens combines real return rates with what customers actually wrote — and tells you what to fix this week. Every claim is cited.</p>
   </div>
 
   <div class="setup-card">
@@ -211,6 +211,56 @@
       <div id="grouptests-card" class="card span-12 hidden">
         <div class="card-label">Group Significance Tests (one-way ANOVA)</div>
         <div id="grouptests-body"></div>
+      </div>
+
+      <!-- ReturnLens — Returns Diagnostic (RAG over customer voice) -->
+      <div id="returnlens-card" class="card span-12">
+        <div class="card-label-row">
+          <div class="card-label">🔍 ReturnLens — Returns Diagnostic</div>
+          <span id="rl-status" class="muted small">No customer-voice corpus loaded</span>
+        </div>
+        <p class="muted small" style="margin-top:0;">
+          Upload a reviews / tickets / return-reasons CSV, then ask <em>why</em>
+          customers are returning a specific product. Answers cite real
+          customer quotes — no fabrication.
+        </p>
+
+        <div class="rl-grid">
+          <div class="rl-pane">
+            <div class="rl-pane-label">1. Customer-voice corpus</div>
+            <div class="rl-row">
+              <input id="rl-openai-key" type="password" placeholder="OpenAI API key (sk-… for embeddings)" />
+            </div>
+            <div class="rl-row">
+              <input id="rl-corpus-file" type="file" accept=".csv" />
+              <select id="rl-source-type">
+                <option value="review">Reviews</option>
+                <option value="ticket">Support tickets</option>
+                <option value="return_reason">Return reasons</option>
+              </select>
+              <button id="rl-ingest-btn" class="btn btn-secondary">Index corpus</button>
+            </div>
+            <div id="rl-ingest-status" class="muted small"></div>
+          </div>
+
+          <div class="rl-pane">
+            <div class="rl-pane-label">2. Ask a diagnostic question</div>
+            <div class="rl-row">
+              <input id="rl-sku" placeholder="SKU / product (optional filter)" />
+              <select id="rl-rating-filter">
+                <option value="">All ratings</option>
+                <option value="low">Only 1–2★ (complaints)</option>
+                <option value="mid">3★ (mixed)</option>
+                <option value="high">4–5★ (positive)</option>
+              </select>
+            </div>
+            <div class="rl-row">
+              <input id="rl-question" placeholder="e.g. Why are customers returning the linen shirt?" />
+              <button id="rl-diagnose-btn" class="btn btn-primary">Diagnose</button>
+            </div>
+            <div id="rl-answer-box" class="rl-answer hidden"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Charts -->

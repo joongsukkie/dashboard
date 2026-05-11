@@ -555,6 +555,124 @@ function addChatMsg(who, text) {
 }
 
 // ---------------------------------------------------------------------------
+// ReturnLens — customer-voice RAG diagnostic
+// ---------------------------------------------------------------------------
+const rlIngestBtn = $("#rl-ingest-btn");
+if (rlIngestBtn) rlIngestBtn.addEventListener("click", rlIngestCorpus);
+const rlDiagBtn = $("#rl-diagnose-btn");
+if (rlDiagBtn) rlDiagBtn.addEventListener("click", rlDiagnose);
+const rlQ = $("#rl-question");
+if (rlQ) rlQ.addEventListener("keydown", (e) => { if (e.key === "Enter") rlDiagnose(); });
+
+async function rlIngestCorpus() {
+  const fileEl = $("#rl-corpus-file");
+  const keyEl = $("#rl-openai-key");
+  const sourceEl = $("#rl-source-type");
+  const statusEl = $("#rl-ingest-status");
+  const headerStatus = $("#rl-status");
+
+  const f = fileEl?.files?.[0];
+  const openaiKey = (keyEl?.value || "").trim();
+  if (!openaiKey) { statusEl.textContent = "Enter your OpenAI key (used only for embeddings)."; return; }
+  if (!f) { statusEl.textContent = "Pick a corpus CSV first."; return; }
+
+  state.openaiKey = openaiKey;
+  statusEl.textContent = "Embedding corpus… (this can take 10–30s for a few hundred rows)";
+
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("openai_key", openaiKey);
+  fd.append("source_type", sourceEl?.value || "review");
+
+  try {
+    const r = await fetch("/api/ingest_corpus", { method: "POST", body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      statusEl.textContent = j.error || "Ingestion failed.";
+      return;
+    }
+    const skuList = (j.top_skus || []).slice(0, 5)
+      .map(([s, n]) => `${esc(s)} (${n})`).join(", ");
+    statusEl.innerHTML =
+      `Indexed <b>${j.indexed}</b> ${j.source_type} chunks. ` +
+      (skuList ? `Top SKUs in corpus: ${skuList}.` : "");
+    headerStatus.textContent = `${j.indexed} ${j.source_type} chunks indexed`;
+    headerStatus.style.color = "var(--accent)";
+  } catch (e) {
+    statusEl.textContent = "Ingestion failed: " + e.message;
+  }
+}
+
+async function rlDiagnose() {
+  const q = ($("#rl-question").value || "").trim();
+  const sku = ($("#rl-sku").value || "").trim();
+  const ratingMode = $("#rl-rating-filter").value;
+  const box = $("#rl-answer-box");
+
+  if (!q) { box.classList.remove("hidden"); box.innerHTML = "<em>Enter a question first.</em>"; return; }
+  if (!state.apiKey) { box.classList.remove("hidden"); box.innerHTML = "<em>Connect your narrative LLM key (Claude / OpenAI / Gemini) first.</em>"; return; }
+  if (!state.openaiKey) { box.classList.remove("hidden"); box.innerHTML = "<em>Index a customer-voice corpus first (step 1).</em>"; return; }
+
+  let minR = null, maxR = null;
+  if (ratingMode === "low") { minR = 0; maxR = 2; }
+  if (ratingMode === "mid") { minR = 3; maxR = 3; }
+  if (ratingMode === "high") { minR = 4; maxR = 5; }
+
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="muted small">Retrieving customer quotes and asking the LLM…</div>`;
+
+  try {
+    const r = await fetch("/api/diagnose", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        question: q,
+        sku: sku || null,
+        min_rating: minR,
+        max_rating: maxR,
+        api_key: state.apiKey,
+        openai_key: state.openaiKey,
+        k: 6,
+      }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      box.innerHTML = `<div class="muted">${esc(j.error || "Diagnose failed")}</div>`;
+      return;
+    }
+    const a = j.answer || {};
+    const cits = j.citations || [];
+    const conf = (a.confidence || "—").toLowerCase();
+    const confClass = conf === "high" ? "conf-high" : conf === "medium" ? "conf-mid" : "conf-low";
+
+    box.innerHTML = `
+      <div class="rl-headline">${esc(a.headline || "—")}
+        <span class="rl-conf ${confClass}">confidence: ${esc(conf)}</span>
+      </div>
+      <div class="rl-section"><b>What the numbers say:</b> ${esc(a.stats_summary || "—")}</div>
+      <div class="rl-section"><b>What customers say:</b> ${esc(a.voice_summary || "—")}</div>
+      <div class="rl-section rl-fix"><b>Recommended fix:</b> ${esc(a.recommended_fix || "—")}</div>
+      <details class="rl-cites">
+        <summary>${cits.length} customer quote${cits.length === 1 ? "" : "s"} cited</summary>
+        <ul>
+          ${cits.map(c => `
+            <li>
+              <code>${esc(c.id)}</code> ·
+              ${c.sku ? `sku <b>${esc(c.sku)}</b> · ` : ""}
+              ${c.rating != null ? `${esc(c.rating)}★ · ` : ""}
+              ${c.date ? `${esc(c.date)} · ` : ""}
+              ${esc(c.source_type || "")}
+              <div class="rl-quote">"${esc((c.text || "").slice(0, 400))}"</div>
+            </li>`).join("")}
+        </ul>
+      </details>
+    `;
+  } catch (e) {
+    box.innerHTML = `<div class="muted">Diagnose failed: ${esc(e.message)}</div>`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 $("#btn-excel").addEventListener("click", () => exportFile("excel"));

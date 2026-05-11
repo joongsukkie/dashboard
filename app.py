@@ -43,6 +43,9 @@ from reportlab.platypus import (
     TableStyle, Image as RLImage
 )
 
+# RAG (ReturnLens diagnostic engine)
+import rag
+
 
 # -----------------------------------------------------------------------------
 # App setup
@@ -1423,6 +1426,312 @@ Return a JSON object: {{"answer": "your plain-English answer"}}"""
     except Exception as e:
         log.error(f"Chat failed: {e}")
         return jsonify({"error": f"Chat failed: {str(e)[:200]}"}), 500
+
+
+# -----------------------------------------------------------------------------
+# ReturnLens — RAG over customer voice (reviews / tickets / return reasons)
+# -----------------------------------------------------------------------------
+@app.route("/api/returns_stats", methods=["GET"])
+def api_returns_stats():
+    """Compute return-rate stats from the already-analyzed dataset.
+
+    Looks for return-related columns (is_return flag, return_reason, etc.)
+    and rolls them up overall and per-SKU.
+    """
+    state = get_state()
+    df = state.get("cleaned_df")
+    if df is None:
+        return jsonify({"error": "No dataset analyzed yet. Run analysis first."}), 400
+
+    # Best-guess SKU column from the dataset.
+    sku_col = None
+    for c in df.columns:
+        cl = str(c).lower()
+        if "sku" in cl or "product_id" in cl or cl == "product" or "item_id" in cl:
+            sku_col = c
+            break
+
+    stats_out = rag.compute_returns_stats(df, sku_col=sku_col)
+    stats_out["sku_column"] = sku_col
+    return jsonify({"ok": True, "stats": stats_out})
+
+
+@app.route("/api/ingest_corpus", methods=["POST"])
+def api_ingest_corpus():
+    """Ingest a customer-voice corpus (reviews / tickets / return reasons).
+
+    Body (multipart): file=<CSV with at least a text column>
+                       openai_key=<key for embeddings>
+                       source_type=<review|ticket|return_reason>
+                       mapping=<optional JSON of column overrides>
+    OR
+    Body (JSON):       {openai_key, rows: [...], mapping?, source_type?}
+
+    Builds an in-memory embedded index keyed by the user's session. The
+    index is consulted later by /api/diagnose.
+    """
+    state = get_state()
+    source_type = (request.form.get("source_type")
+                   or (request.get_json(silent=True) or {}).get("source_type")
+                   or "review")
+    openai_key = (request.form.get("openai_key")
+                  or (request.get_json(silent=True) or {}).get("openai_key")
+                  or state.get("openai_key") or "").strip()
+
+    if not openai_key:
+        return jsonify({"error": "OpenAI API key required for embeddings (text-embedding-3-small)."}), 400
+    if not openai_key.startswith("sk-"):
+        return jsonify({"error": "That doesn't look like an OpenAI key. ReturnLens uses OpenAI embeddings; please supply an OpenAI key starting with sk-."}), 400
+
+    # Load the CSV.
+    try:
+        if "file" in request.files:
+            f = request.files["file"]
+            raw = f.read()
+            df = None
+            for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+                try:
+                    df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if df is None:
+                return jsonify({"error": "Could not decode corpus CSV."}), 400
+        else:
+            body = request.get_json(silent=True) or {}
+            rows = body.get("rows") or []
+            if not rows:
+                return jsonify({"error": "No corpus rows provided."}), 400
+            df = pd.DataFrame(rows)
+
+        if df.empty:
+            return jsonify({"error": "Corpus CSV is empty."}), 400
+
+        # Mapping override from client, or auto-detect.
+        mapping = None
+        if "mapping" in request.form:
+            try:
+                mapping = json.loads(request.form["mapping"])
+            except json.JSONDecodeError:
+                mapping = None
+        if not mapping:
+            body = request.get_json(silent=True) or {}
+            mapping = body.get("mapping")
+        if not mapping:
+            mapping = rag.detect_corpus_columns(df)
+
+        chunks = rag.rows_to_chunks(df, mapping, default_source=source_type)
+        if not chunks:
+            return jsonify({
+                "error": "No usable text rows found. Make sure your corpus CSV "
+                         "has a column with review/comment/ticket text.",
+                "detected_mapping": mapping,
+            }), 400
+
+        # Cap to keep embedding cost / latency bounded on a free Render tier.
+        MAX_CHUNKS = 2000
+        if len(chunks) > MAX_CHUNKS:
+            chunks = chunks[:MAX_CHUNKS]
+
+        index = rag.build_index(chunks, openai_api_key=openai_key)
+
+        # Merge with any prior corpus the user uploaded in this session,
+        # rather than replacing. Useful for combining reviews + tickets.
+        prior = state.get("rag_index")
+        if prior and len(prior.get("chunks", [])):
+            merged_chunks = list(prior["chunks"]) + chunks
+            merged_emb = np.vstack([prior["embeddings"], index["embeddings"]])
+            index = {
+                "chunks": merged_chunks,
+                "embeddings": merged_emb,
+                "built_at": datetime.utcnow().isoformat(),
+            }
+
+        state["rag_index"] = index
+        state["openai_key"] = openai_key
+        state["corpus_mapping"] = mapping
+
+        # Useful summary stats for the UI panel.
+        n = len(index["chunks"])
+        sku_counts: dict = {}
+        rating_counts: dict = {}
+        for c in index["chunks"]:
+            if c.get("sku"):
+                sku_counts[c["sku"]] = sku_counts.get(c["sku"], 0) + 1
+            if c.get("rating") is not None:
+                key = str(int(c["rating"]))
+                rating_counts[key] = rating_counts.get(key, 0) + 1
+
+        return jsonify({
+            "ok": True,
+            "indexed": n,
+            "source_type": source_type,
+            "mapping": mapping,
+            "top_skus": sorted(sku_counts.items(), key=lambda kv: -kv[1])[:10],
+            "rating_distribution": rating_counts,
+        })
+    except Exception as e:
+        log.error(f"Corpus ingestion failed: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": f"Ingestion failed: {str(e)[:200]}"}), 500
+
+
+@app.route("/api/diagnose", methods=["POST"])
+def api_diagnose():
+    """Grounded diagnostic Q&A.
+
+    Combines (a) numerical return-rate stats from the CSV and (b) retrieved
+    customer-voice chunks. The LLM is constrained to cite both sources and
+    forbidden from inventing quotes.
+
+    Body: {api_key, question, sku?, min_rating?, max_rating?, source_type?, k?}
+    """
+    state = get_state()
+    body = request.get_json(silent=True) or {}
+
+    api_key = (body.get("api_key") or state.get("api_key") or "").strip()
+    openai_key = (body.get("openai_key") or state.get("openai_key") or "").strip()
+    provider = detect_provider(api_key) if api_key else state.get("provider")
+
+    if state.get("cleaned_df") is None:
+        return jsonify({"error": "No analyzed dataset. Run analysis first."}), 400
+    if not state.get("rag_index"):
+        return jsonify({"error": "No customer-voice corpus uploaded yet. Upload reviews or tickets first."}), 400
+    if not api_key or not provider:
+        return jsonify({"error": "Narrative LLM key missing (Claude / OpenAI / Gemini)."}), 400
+    if not openai_key:
+        return jsonify({"error": "OpenAI key required for embedding the question."}), 400
+
+    question = (body.get("question") or "").strip()
+    if not question:
+        return jsonify({"error": "Empty question."}), 400
+
+    sku = (body.get("sku") or "").strip() or None
+    min_rating = body.get("min_rating")
+    max_rating = body.get("max_rating")
+    source_type = body.get("source_type")
+    k = int(body.get("k") or 6)
+
+    # Build filter dict for metadata pre-filter.
+    filters: dict = {}
+    if sku:
+        filters["sku"] = ("eq", sku)
+    if source_type:
+        filters["source_type"] = ("eq", source_type)
+    if min_rating is not None:
+        filters["rating"] = ("gte", min_rating)
+    if max_rating is not None:
+        # Both gte and lte on the same field — apply max as a second pass.
+        existing = filters.get("rating")
+        if existing and existing[0] == "gte":
+            # combine via a tuple-of-tuples we'll handle below
+            filters.pop("rating")
+            filters["__rating_gte"] = existing[1]
+            filters["__rating_lte"] = max_rating
+        else:
+            filters["rating"] = ("lte", max_rating)
+
+    # The custom op encoding above isn't supported by retrieve directly;
+    # so just split into two passes if both bounds are present.
+    def _post_rating_filter(rows):
+        lo = filters.pop("__rating_gte", None)
+        hi = filters.pop("__rating_lte", None)
+        if lo is None and hi is None:
+            return rows
+        out = []
+        for r in rows:
+            v = r.get("rating")
+            if v is None:
+                continue
+            if lo is not None and v < lo:
+                continue
+            if hi is not None and v > hi:
+                continue
+            out.append(r)
+        return out
+
+    try:
+        retrieved = rag.retrieve(
+            state["rag_index"], question, openai_api_key=openai_key,
+            k=max(k, 12), filters={k_: v for k_, v in filters.items() if not k_.startswith("__")},
+        )
+        retrieved = _post_rating_filter(retrieved)[:k]
+    except Exception as e:
+        log.error(f"Retrieval failed: {e}")
+        return jsonify({"error": f"Retrieval failed: {str(e)[:200]}"}), 500
+
+    # CSV-grounded numerical context: return-rate for the queried SKU if any.
+    df = state["cleaned_df"]
+    sku_col = None
+    for c in df.columns:
+        cl = str(c).lower()
+        if "sku" in cl or "product_id" in cl or "item_id" in cl:
+            sku_col = c
+            break
+    csv_stats = rag.compute_returns_stats(df, sku_col=sku_col)
+    if sku and sku_col and csv_stats.get("per_sku"):
+        per_sku_row = next(
+            (r for r in csv_stats["per_sku"] if str(r["sku"]).lower() == sku.lower()),
+            None,
+        )
+        csv_stats["focus_sku"] = per_sku_row
+
+    # Build the grounded prompt.
+    quotes_block = "\n".join([
+        f"[Q{i+1}] sku={c.get('sku','?')} rating={c.get('rating','?')} "
+        f"date={c.get('date','?')} source={c.get('source_type','?')}: "
+        f"\"{c['text'][:500]}\""
+        for i, c in enumerate(retrieved)
+    ]) or "(no relevant customer quotes retrieved)"
+
+    prompt = f"""You are a returns and customer-experience analyst for a DTC brand.
+Answer the user's question by combining (a) the CSV-grounded numerical stats below
+and (b) the retrieved customer quotes. STRICT RULES:
+
+1. Every numerical claim must come from the CSV STATS block. Do NOT invent numbers.
+2. Every claim about what customers say or feel must be backed by a quote from the
+   RETRIEVED QUOTES block, cited inline as [Q1], [Q2], etc.
+3. Do NOT fabricate quotes. If the retrieved quotes don't support a confident
+   answer, say so plainly.
+4. End your answer with a single concrete "Recommended fix" the brand could ship
+   this week.
+
+CSV STATS:
+{json.dumps(csv_stats, default=str)[:4000]}
+
+RETRIEVED QUOTES ({len(retrieved)} of corpus, filtered by {json.dumps({k_: v for k_, v in filters.items() if not k_.startswith('__')}) or 'no filters'}):
+{quotes_block}
+
+USER QUESTION: {question}
+
+Return a JSON object: {{
+  "headline": "one-sentence diagnosis",
+  "stats_summary": "1-2 sentences citing CSV stats",
+  "voice_summary": "2-4 sentences citing [Q#] quotes",
+  "recommended_fix": "one concrete shippable action",
+  "confidence": "high|medium|low"
+}}"""
+
+    try:
+        caller = {"openai": call_openai, "anthropic": call_anthropic,
+                  "gemini": call_gemini}[provider]
+        raw = caller(api_key, prompt, strict=False)
+        try:
+            parsed = _safe_json_extract(raw)
+        except Exception:
+            parsed = {"headline": raw[:400], "stats_summary": "",
+                      "voice_summary": "", "recommended_fix": "",
+                      "confidence": "low"}
+        return jsonify({
+            "ok": True,
+            "answer": parsed,
+            "citations": [
+                {"id": f"Q{i+1}", **c} for i, c in enumerate(retrieved)
+            ],
+            "csv_stats": csv_stats,
+        })
+    except Exception as e:
+        log.error(f"Diagnose failed: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": f"Diagnose failed: {str(e)[:200]}"}), 500
 
 
 # -----------------------------------------------------------------------------
