@@ -208,6 +208,23 @@ function renderDashboard(d) {
   $("#db-sub").textContent =
     `${d.rows.toLocaleString()} rows × ${d.cols} columns · Mode: ${d.mode}`;
 
+  // Archetype badge + playbook block (B2C specialization layer)
+  renderArchetype(d.archetype);
+  renderPlaybook(d.archetype, d.playbook);
+
+  // ReturnLens card: only useful for reviews-shaped data or orders with returns
+  const rlCard = $("#returnlens-card");
+  const archName = d.archetype?.name;
+  const rolesHasReturn = d.archetype?.role_columns?.return_flag
+                       || d.archetype?.role_columns?.return_reason;
+  if (rlCard) {
+    if (archName === "reviews" || (archName === "orders" && rolesHasReturn)) {
+      rlCard.classList.remove("hidden");
+    } else {
+      rlCard.classList.add("hidden");
+    }
+  }
+
   // Executive summary
   $("#exec-summary").textContent = d.executive_summary || "No summary returned.";
 
@@ -310,6 +327,104 @@ function renderDashboard(d) {
   state.tableRows = d.preview || [];
   state.tableCols = d.profile?.columns || Object.keys(state.tableRows[0] || {});
   renderTable();
+}
+
+function renderArchetype(a) {
+  const badge = $("#archetype-badge");
+  if (!badge || !a) return;
+  if (a.name === "generic") {
+    // Don't show a badge when we couldn't confidently classify — that
+    // would over-claim. Just stay quiet.
+    badge.classList.add("hidden");
+    return;
+  }
+  const confPct = Math.round((a.confidence || 0) * 100);
+  const tone = confPct >= 80 ? "high" : confPct >= 55 ? "mid" : "low";
+  badge.className = `archetype-badge tone-${tone}`;
+  badge.innerHTML = `
+    <span class="ab-dot"></span>
+    <span class="ab-label">Detected:</span>
+    <span class="ab-name">${esc(a.name)}</span>
+    <span class="ab-desc">${esc(a.description || "")}</span>
+    <span class="ab-conf">${confPct}% confidence</span>
+  `;
+  badge.classList.remove("hidden");
+}
+
+function renderPlaybook(archetype, pb) {
+  const card = $("#playbook-card");
+  if (!card) return;
+  if (!pb || !archetype || archetype.name === "generic") {
+    card.classList.add("hidden");
+    return;
+  }
+
+  $("#playbook-title").textContent =
+    archetype.name === "orders"        ? "Orders Playbook — RFM, cohorts, AOV, retention" :
+    archetype.name === "marketing"     ? "Marketing Playbook — ROAS, CAC, channel mix" :
+    archetype.name === "customers"     ? "Customers Playbook — RFM, CLV, segments" :
+    archetype.name === "subscriptions" ? "Subscriptions Playbook — MRR, churn, cohorts" :
+    archetype.name === "sessions"      ? "Sessions Playbook — funnel, sources, drop-off" :
+    archetype.name === "reviews"       ? "Reviews Playbook — sentiment, low-rating clusters" :
+    archetype.name === "catalog"       ? "Catalog Playbook — margin, stockout, long tail" :
+    "Analyst Playbook";
+  $("#playbook-sub").textContent =
+    (pb.kpis?.length || 0) + " KPIs · " +
+    (pb.segments?.length || 0) + " segments · " +
+    (pb.tables?.length || 0) + " tables";
+
+  // KPIs
+  const kpiBox = $("#playbook-kpis");
+  kpiBox.innerHTML = (pb.kpis || []).map(k => `
+    <div class="pkpi">
+      <div class="pkpi-label">${esc(k.label || "")}</div>
+      <div class="pkpi-value">${esc(String(k.value || "—"))}</div>
+      <div class="pkpi-sub">${esc(k.detail || "")}</div>
+    </div>
+  `).join("");
+
+  // Segments (RFM, etc.)
+  const segBox = $("#playbook-segments");
+  if (pb.segments && pb.segments.length) {
+    segBox.innerHTML = `
+      <h4 class="playbook-section-h">Segments</h4>
+      <div class="playbook-seg-grid">
+        ${pb.segments.map(s => `
+          <div class="pseg">
+            <div class="pseg-name">${esc(s.name)}</div>
+            <div class="pseg-stats">
+              <span><b>${s.n.toLocaleString()}</b> customers</span>
+              ${s.revenue != null ? `<span><b>$${(s.revenue||0).toLocaleString(undefined,{maximumFractionDigits:0})}</b> revenue</span>` : ""}
+              ${s.revenue_share != null ? `<span class="pseg-share">${(s.revenue_share*100).toFixed(1)}% of revenue</span>` : ""}
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  } else {
+    segBox.innerHTML = "";
+  }
+
+  // Tables
+  const tblBox = $("#playbook-tables");
+  tblBox.innerHTML = (pb.tables || []).map(t => `
+    <div class="playbook-tbl">
+      <h4 class="playbook-section-h">${esc(t.title)}</h4>
+      <div class="table-wrap"><table>
+        <thead><tr>${(t.columns || []).map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+        <tbody>${(t.rows || []).map(r => `<tr>${r.map(cell => `<td>${esc(String(cell))}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table></div>
+      ${t.note ? `<p class="muted small playbook-note">${esc(t.note)}</p>` : ""}
+    </div>
+  `).join("");
+
+  // Alerts (honest caveats — small sample warnings, missing-column notices)
+  const alertsBox = $("#playbook-alerts");
+  alertsBox.innerHTML = (pb.alerts && pb.alerts.length)
+    ? `<div class="playbook-alerts-inner">⚠ ${pb.alerts.map(esc).join(" · ")}</div>`
+    : "";
+
+  card.classList.remove("hidden");
 }
 
 function renderClean(c) {

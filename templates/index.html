@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light" />
-<title>ReturnLens — AI returns diagnostic for DTC brands</title>
+<title>Beacon — AI data analyst for B2C businesses</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" />
@@ -21,15 +21,15 @@
   <nav class="site-nav">
     <div class="nav-brand">
       <div class="brand-mark small"></div>
-      <span>ReturnLens</span>
+      <span>Beacon</span>
     </div>
-    <div class="nav-meta muted small">AI returns diagnostic for DTC brands</div>
+    <div class="nav-meta muted small">AI data analyst for B2C businesses</div>
   </nav>
 
   <div class="hero">
-    <span class="eyebrow">Returns &amp; Review Intelligence</span>
-    <h1 class="hero-title">Find out <em>why</em> customers return your products.</h1>
-    <p class="hero-sub">Upload your orders + reviews. ReturnLens combines real return rates with what customers actually wrote — and tells you what to fix this week. Every claim is cited.</p>
+    <span class="eyebrow">Senior B2C Analyst, in software</span>
+    <h1 class="hero-title">Upload any B2C dataset. Get the <em>right</em> dashboard.</h1>
+    <p class="hero-sub">Beacon recognizes what kind of data you uploaded — orders, marketing, customers, sessions, subscriptions, reviews, or catalog — and runs the playbook a senior analyst would: RFM, cohort retention, ROAS, MRR, funnel drop-off. Every number cited. No hallucinated charts.</p>
   </div>
 
   <div class="setup-card">
@@ -182,12 +182,27 @@
     <div class="dash-grid">
       <!-- Executive summary -->
       <div class="card span-12">
-        <div class="card-label">Executive Summary</div>
+        <div class="card-label-row">
+          <div class="card-label">Executive Summary</div>
+          <div id="archetype-badge" class="archetype-badge hidden"></div>
+        </div>
         <p id="exec-summary" class="exec-text"></p>
       </div>
 
       <!-- KPI row -->
       <div id="kpi-row" class="kpi-row span-12"></div>
+
+      <!-- Playbook output: archetype-specific KPIs, segments, tables -->
+      <div id="playbook-card" class="card span-12 hidden">
+        <div class="card-label-row">
+          <div class="card-label" id="playbook-title">Analyst Playbook</div>
+          <span id="playbook-sub" class="muted small"></span>
+        </div>
+        <div id="playbook-kpis" class="playbook-kpis"></div>
+        <div id="playbook-segments"></div>
+        <div id="playbook-tables"></div>
+        <div id="playbook-alerts" class="playbook-alerts"></div>
+      </div>
 
       <!-- Cleaning report -->
       <div id="clean-card" class="card span-6">
@@ -213,8 +228,10 @@
         <div id="grouptests-body"></div>
       </div>
 
-      <!-- ReturnLens — Returns Diagnostic (RAG over customer voice) -->
-      <div id="returnlens-card" class="card span-12">
+      <!-- ReturnLens — Returns Diagnostic (RAG over customer voice).
+           Shown only when the detected archetype is 'reviews' or 'orders'
+           with a return column, where customer-voice diagnosis adds value. -->
+      <div id="returnlens-card" class="card span-12 hidden">
         <div class="card-label-row">
           <div class="card-label">🔍 ReturnLens — Returns Diagnostic</div>
           <span id="rl-status" class="muted small">No customer-voice corpus loaded</span>

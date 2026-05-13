@@ -2,6 +2,8 @@
 AI-Powered Data Analytics Agent
 Flask web application for marketing and digital analytics workflows.
 """
+from __future__ import annotations
+
 import os
 import io
 import json
@@ -43,8 +45,12 @@ from reportlab.platypus import (
     TableStyle, Image as RLImage
 )
 
-# RAG (ReturnLens diagnostic engine)
+# RAG (ReturnLens diagnostic engine — used only when archetype == 'reviews')
 import rag
+
+# B2C archetype detection + playbooks (senior-analyst per-dataset-type analysis)
+import archetypes as arch_mod
+import playbooks as playbook_mod
 
 
 # -----------------------------------------------------------------------------
@@ -169,6 +175,168 @@ def _fuzzy_canonicalize(series: pd.Series, cutoff: float = 0.85) -> tuple[pd.Ser
     return s_norm.map(mapping_norm), audit
 
 
+import re as _re
+
+# Patterns used by cleaning + PII detection.
+_PII_PATTERNS = {
+    "email":  _re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    "phone":  _re.compile(r"(?:\+?\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}"),
+    "card":   _re.compile(r"\b(?:\d[ -]?){13,19}\b"),
+    "ssn_us": _re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+}
+
+# Common analyst placeholders for "missing" — when a number appears far more
+# often than any other and looks like one of these, it's almost always a
+# sentinel, not a real measurement.
+_PLACEHOLDER_NUMS = {-1, -999, -9999, 999, 9999, 99999, 999999}
+
+
+def _parse_numeric_smart(series: pd.Series) -> tuple[pd.Series, str | None]:
+    """Best-effort numeric parsing for currency, EU decimals, accounting
+    parentheses-as-negative, trailing percent signs and currency codes.
+
+    Returns (parsed_series, label) where label is one of:
+      'numeric', 'numeric (currency)', 'numeric (percent)',
+      'numeric (eu)', 'numeric (accounting)', or None if parsing failed.
+    """
+    s_raw = series.astype(str).str.strip()
+    sample = s_raw.dropna().head(300)
+    if sample.empty:
+        return series, None
+
+    has_percent  = sample.str.contains("%").any()
+    has_currency = sample.str.contains(r"[$£€¥₹]|\b(?:USD|EUR|GBP|JPY|INR)\b",
+                                       regex=True, case=False).any()
+    has_parens   = sample.str.match(r"^\(.*\)$").any()
+    has_eu_fmt   = sample.str.match(r"^-?\d{1,3}(\.\d{3})+,\d+$").any()
+
+    s = s_raw
+    if has_eu_fmt:
+        # 1.234,56 → 1234.56
+        s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+    else:
+        # Strip thousands separators (commas) only when there's no EU pattern.
+        s = s.str.replace(",", "", regex=False)
+
+    if has_parens:
+        # (123.45) → -123.45
+        s = s.where(~s.str.match(r"^\(.*\)$"),
+                    "-" + s.str.replace(r"[()]", "", regex=True))
+
+    # Strip currency symbols, percent signs, trailing currency codes.
+    s = s.str.replace(r"[$£€¥₹]", "", regex=True)
+    s = s.str.replace(r"(?i)\b(?:USD|EUR|GBP|JPY|INR|CAD|AUD)\b", "", regex=True)
+    s = s.str.replace("%", "", regex=False).str.strip()
+
+    parsed = pd.to_numeric(s, errors="coerce")
+    coverage = parsed.notna().sum() / max(1, len(s_raw.dropna()))
+    if coverage < 0.9:
+        return series, None
+
+    if has_percent:
+        return parsed, "numeric (percent)"
+    if has_eu_fmt:
+        return parsed, "numeric (eu)"
+    if has_parens:
+        return parsed, "numeric (accounting)"
+    if has_currency:
+        return parsed, "numeric (currency)"
+    return parsed, "numeric"
+
+
+def _parse_dates_smart(series: pd.Series) -> tuple[pd.Series | None, str | None]:
+    """Try date parsing with a few strategies. Returns (parsed_or_None, label).
+
+    Strategies (in order):
+    1. Excel serial numbers (integers in the 25000–60000 range).
+    2. ISO/standard via pandas' default parser.
+    3. dayfirst=True (DD/MM/YYYY common outside the US).
+    4. Mixed formats: pd.to_datetime(..., format='mixed') for pandas >= 2.0.
+    """
+    sample = series.dropna().astype(str).head(300)
+    if sample.empty:
+        return None, None
+
+    # Skip if it looks numeric (so we don't accidentally datetime-ize prices).
+    if sample.str.match(r"^-?\d+(\.\d+)?$").mean() > 0.8:
+        # Could still be Excel serials — check range.
+        try:
+            as_num = pd.to_numeric(sample, errors="coerce")
+            if as_num.between(25000, 60000).mean() > 0.9:
+                origin = pd.Timestamp("1899-12-30")
+                parsed = origin + pd.to_timedelta(
+                    pd.to_numeric(series, errors="coerce"), unit="D")
+                if parsed.notna().sum() >= 0.85 * len(series.dropna()):
+                    return parsed, "datetime (excel serial)"
+        except Exception:
+            pass
+        return None, None
+
+    import warnings
+    for kwargs, label in [
+        ({"errors": "coerce"}, "datetime"),
+        ({"errors": "coerce", "dayfirst": True}, "datetime (dayfirst)"),
+        ({"errors": "coerce", "format": "mixed"}, "datetime (mixed)"),
+    ]:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                parsed_sample = pd.to_datetime(sample, **kwargs)
+                if (parsed_sample.notna().sum() >= 0.85 * len(sample)
+                        and parsed_sample.dropna().nunique() >= 2):
+                    full = pd.to_datetime(series, **kwargs)
+                    return full, label
+        except (ValueError, TypeError):
+            continue
+    return None, None
+
+
+def _detect_pii_columns(df: pd.DataFrame) -> dict:
+    """Scan object columns for PII patterns. Returns {col: pii_type}.
+
+    Triggers if >=20% of non-null values match the pattern — high enough to
+    avoid false positives, low enough to catch real PII columns that have
+    some blank entries.
+    """
+    out: dict = {}
+    for col in df.select_dtypes(include=["object"]).columns:
+        nn = df[col].dropna().astype(str).head(500)
+        if nn.empty:
+            continue
+        for kind, pat in _PII_PATTERNS.items():
+            if (nn.str.contains(pat).mean() >= 0.2):
+                out[col] = kind
+                break
+    return out
+
+
+def _detect_placeholder_numbers(series: pd.Series) -> int | None:
+    """Find a numeric placeholder value if one dominates the column.
+
+    Returns the placeholder value (as int) if a known sentinel value
+    accounts for >=2% of the column AND occurs as a clear outlier compared
+    to the rest of the distribution.
+    """
+    if not pd.api.types.is_numeric_dtype(series):
+        return None
+    nn = series.dropna()
+    if len(nn) < 50:
+        return None
+    counts = nn.value_counts()
+    for ph in _PLACEHOLDER_NUMS:
+        if ph in counts and counts[ph] / len(nn) >= 0.02:
+            # Heuristic: the placeholder should sit far above (or below) the
+            # rest of the distribution — not just a frequent legitimate value.
+            rest = nn[nn != ph]
+            if rest.empty:
+                return int(ph)
+            q1, q3 = rest.quantile(0.25), rest.quantile(0.75)
+            iqr = q3 - q1
+            if ph > q3 + 3 * iqr or ph < q1 - 3 * iqr:
+                return int(ph)
+    return None
+
+
 def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Clean the dataframe *conservatively*. Guiding principles:
 
@@ -192,56 +360,61 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         "high_null_columns": {},         # {col: pct}
         "negative_in_positive_cols": {}, # {col: count}
         "zero_in_positive_cols": {},     # {col: count}
+        "placeholder_values_nulled": {}, # {col: {value: count}}
+        "pii_columns": {},               # {col: kind}
         "rows_with_any_null": 0,
     }
 
-    # 1. Trim column names.
+    # 1. Trim column names + dedupe header collisions.
     new_cols = {c: str(c).strip() for c in df.columns}
     changed = [c for c, nc in new_cols.items() if c != nc]
     df = df.rename(columns=new_cols)
     summary["whitespace_columns_fixed"] = changed
 
-    # 2. Strip string whitespace + replace empty sentinels with NaN.
+    # 2. Strip string whitespace + replace expanded list of empty sentinels.
+    # Senior-analyst heuristic: more sentinels than just "N/A". CSV exports
+    # from Snowflake, Looker, GA, etc. each pick a different "missing" token.
+    SENTINELS = {"nan", "None", "NaN", "NULL", "null", "Null", "N/A", "n/a",
+                 "NA", "na", "-", "--", "?", "unknown", "Unknown", "UNKNOWN",
+                 "(blank)", "(empty)", "<NA>", "#N/A", ""}
     for col in df.select_dtypes(include=["object"]).columns:
         s = df[col].astype(str).str.strip()
-        df[col] = s.replace(
-            {"nan": np.nan, "None": np.nan, "NaN": np.nan, "NULL": np.nan,
-             "null": np.nan, "N/A": np.nan, "n/a": np.nan, "": np.nan}
-        )
+        df[col] = s.replace({v: np.nan for v in SENTINELS})
 
-    # 3. Type inference — booleans (strict), dates (strict), numerics.
+    # 3. Type inference — booleans, dates, numerics. Smart parsers handle
+    # currency, EU decimals, accounting parens, Excel serials, dayfirst, etc.
     for col in df.columns:
         if df[col].dtype != object:
             continue
         sample = df[col].dropna().astype(str).head(300)
         if len(sample) == 0:
             continue
+
+        # Boolean (expanded: y/n, t/f, 0/1, true/false).
         lower_vals = set(sample.str.lower().str.strip().unique())
-        bool_textual = {"true", "false", "yes", "no", "t", "f"}
+        bool_textual = {"true", "false", "yes", "no", "y", "n", "t", "f",
+                        "1", "0"}
         if lower_vals.issubset(bool_textual) and 1 <= len(lower_vals) <= 2:
             df[col] = df[col].astype(str).str.lower().str.strip().map(
                 {"true": True, "false": False, "yes": True, "no": False,
-                 "t": True, "f": False}
+                 "y": True, "n": False, "t": True, "f": False,
+                 "1": True, "0": False}
             )
             summary["types_inferred"][col] = "boolean"
             continue
-        try:
-            parsed = pd.to_datetime(sample, errors="coerce", utc=False)
-            if parsed.notna().sum() >= 0.85 * len(sample) and parsed.dropna().nunique() >= 2:
-                looks_numeric = sample.str.match(r"^-?\d+(\.\d+)?$").mean() > 0.8
-                if not looks_numeric:
-                    df[col] = pd.to_datetime(df[col], errors="coerce")
-                    summary["types_inferred"][col] = "datetime"
-                    continue
-        except (ValueError, TypeError):
-            pass
-        stripped = sample.str.replace(r"[,$\s]", "", regex=True).str.rstrip("%")
-        had_percent = sample.str.contains("%").any()
-        numeric_try = pd.to_numeric(stripped, errors="coerce")
-        if numeric_try.notna().sum() >= 0.9 * len(sample):
-            full_stripped = df[col].astype(str).str.replace(r"[,$\s]", "", regex=True).str.rstrip("%")
-            df[col] = pd.to_numeric(full_stripped, errors="coerce")
-            summary["types_inferred"][col] = "numeric (percent)" if had_percent else "numeric"
+
+        # Date — try a few strategies (ISO, dayfirst, mixed, Excel serial).
+        parsed_dt, dt_label = _parse_dates_smart(df[col])
+        if parsed_dt is not None:
+            df[col] = parsed_dt
+            summary["types_inferred"][col] = dt_label
+            continue
+
+        # Numeric — currency-aware, parens-as-negative, EU decimal, percent.
+        parsed_num, num_label = _parse_numeric_smart(df[col])
+        if num_label:
+            df[col] = parsed_num
+            summary["types_inferred"][col] = num_label
 
     # 4. Canonicalize categorical spelling — fuzzy merge near-duplicate
     # labels ("bengaluru"/"Bangalore"/"bangalore", "hyd"/"hyderabad"/"hyderbad")
@@ -374,7 +547,23 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
                 ),
             }
 
-    # 8. Record — don't fix — high-null columns.
+    # 8. Detect and nullify analyst-placeholder numbers (9999, -1, etc.)
+    #    that are obviously sentinels rather than real measurements.
+    for col in df.columns:
+        ph = _detect_placeholder_numbers(df[col])
+        if ph is not None:
+            mask = df[col] == ph
+            count = int(mask.sum())
+            if count:
+                df.loc[mask, col] = np.nan
+                summary["placeholder_values_nulled"][col] = {str(ph): count}
+
+    # 9. PII detection — flag columns that contain emails, phone numbers,
+    #    card numbers, or SSNs. We don't redact (analysts need the column
+    #    to dedupe customers, etc.) — we just surface the finding.
+    summary["pii_columns"] = _detect_pii_columns(df)
+
+    # 10. Record — don't fix — high-null columns.
     for col in df.columns:
         null_pct = (df[col].isna().sum() / n) if n else 0.0
         if null_pct >= 0.30:
@@ -456,26 +645,40 @@ TEMPLATES = {
 # -----------------------------------------------------------------------------
 # AI provider abstraction
 # -----------------------------------------------------------------------------
-ANALYSIS_PROMPT = """You are a senior analytics expert. Return ONLY valid JSON.
+ANALYSIS_PROMPT = """You are a SENIOR B2C DATA ANALYST with 10+ years of experience.
+You are NOT a generic AI assistant. You write like an analyst presenting to
+the CEO: direct, specific, recommendation-driven, free of filler. Return ONLY
+valid JSON.
 
-DATASET PROFILE:
-{profile_json}
+DETECTED DATASET ARCHETYPE: {archetype_name} (confidence {archetype_conf})
+ARCHETYPE DESCRIPTION: {archetype_desc}
+ROLE COLUMNS DETECTED: {role_columns}
 
-PRE-COMPUTED GROUND-TRUTH STATS (use these exact numbers — do NOT invent totals):
+The right vocabulary for this archetype:
+{vocab}
+
+PRE-COMPUTED PLAYBOOK OUTPUT (this is the ground truth — every number you
+cite must come from here or from the stats block below):
+{playbook_json}
+
+PRE-COMPUTED GROUND-TRUTH STATS:
 {stats_json}
+
+DATASET PROFILE (schema reference only — do not infer business meaning that
+contradicts the archetype):
+{profile_json}
 
 CLEANING REPORT (honest record of what was and wasn't done to the data):
 {clean_json}
 
 ANALYSIS MODE: {mode}
-DOMAIN KPIS: {kpis}
 DOMAIN GUIDANCE: {guidance}
 CUSTOM USER QUESTIONS: {custom}
 BENCHMARKS: {benchmarks}
 
 Return a JSON object with EXACTLY this schema:
 {{
-  "executive_summary": "3-5 sentences. Reference SPECIFIC numbers from the ground-truth stats above. Never invent totals.",
+  "executive_summary": "4-6 sentences in senior-analyst voice. Lead with the most important finding (not a description). Reference the archetype's vocabulary. Cite specific numbers from the playbook output. End with one concrete recommendation.",
   "kpi_cards": [
     {{"label": "string", "value": "string (formatted)", "subtext": "string"}}
   ],
@@ -486,23 +689,68 @@ Return a JSON object with EXACTLY this schema:
   ]
 }}
 
-CRITICAL REQUIREMENTS:
-- Charts are built deterministically in code — you do NOT propose charts.
-- Every number in executive_summary and kpi_cards MUST come from the
-  pre-computed stats above. If a stat isn't listed, do not claim it.
-- KPI values should use totals.sum/mean/median for amount columns, and
-  row_count for volume metrics. Never claim a column total the stats
-  don't show.
-- In data_quality_notes, explicitly call out:
-  * any high_null_columns (and note they were KEPT, not dropped)
-  * any category_merges that were applied (typo/case fixes)
-  * any negative_in_positive_cols or zero_in_positive_cols (suspect data)
-  * any group_tests that returned non-significant p-values
-    (ranking is within noise)
-- Produce 4-6 KPI cards.
-- SQL must be Snowflake-compatible and assume the table is named `dataset`.
-- Respond with ONLY the JSON object, no markdown fences.
+CRITICAL ANALYST RULES — break any of these and the response is wrong:
+1. NO generic observations. "Revenue trends upward" or "the data shows
+   variation" are banned. Be specific: which segment, which channel, by
+   what amount, vs what baseline.
+2. Use the archetype's vocabulary. For orders: AOV, repeat rate, RFM tiers,
+   month-N retention, top-decile share. For marketing: ROAS, CAC, CTR/CVR
+   by channel, blended vs paid. Don't say "high-value customers" if you
+   mean "Champions" (the RFM segment).
+3. Every number you cite must appear in the playbook output or stats above.
+   No invented totals, no rounded-feel guesses.
+4. Prefer the playbook's KPI list and segments for kpi_cards — they're
+   already correct. Reformat them, don't replace them.
+5. The recommendation in executive_summary must be a SPECIFIC action a
+   manager could take this quarter — not "consider improving X".
+6. In data_quality_notes, surface the playbook 'alerts' and the cleaning
+   findings (high_null_columns, category_merges, suspect_negatives_nulled,
+   PII columns, etc.). Honesty about caveats matters.
+7. Charts are built deterministically in code — do NOT propose charts.
+8. SQL must be Snowflake-compatible and assume the table is named `dataset`.
+9. Respond with ONLY the JSON object, no markdown fences.
 """
+
+
+ARCHETYPE_VOCAB = {
+    "orders": (
+        "AOV (average order value), repeat-purchase rate, RFM segmentation "
+        "(Champions / Loyal / At Risk / Hibernating / New / Need Attention), "
+        "cohort retention by month-offset, top-decile revenue concentration, "
+        "Pareto share, gross margin, return rate, discount lift."
+    ),
+    "customers": (
+        "RFM scoring, segment share of revenue, CLV (customer lifetime value), "
+        "predicted churn risk, acquisition-channel mix, tenure cohorts."
+    ),
+    "marketing": (
+        "ROAS (revenue ÷ spend), CAC (cost per acquisition), CTR (clicks ÷ "
+        "impressions), CVR (conversions ÷ clicks), blended vs paid, channel "
+        "mix, frequency-response curve, diminishing returns, attribution window."
+    ),
+    "sessions": (
+        "funnel drop-off by step, bounce rate, session duration distribution, "
+        "source/medium mix, top exit pages, conversion rate by traffic source."
+    ),
+    "subscriptions": (
+        "MRR (monthly recurring revenue), gross/net churn, cohort survival "
+        "curves, save rate, expansion vs contraction, LTV by cohort, "
+        "downgrade/upgrade flows."
+    ),
+    "reviews": (
+        "sentiment distribution, rating by SKU, low-rating topic clusters, "
+        "review velocity over time, verified vs unverified, NPS bucketing "
+        "(promoter/passive/detractor)."
+    ),
+    "catalog": (
+        "margin by category, stockout risk, long-tail revenue share, "
+        "seasonal SKUs, price-elasticity proxies, assortment depth."
+    ),
+    "generic": (
+        "Standard exploratory data analysis — distributions, top categories, "
+        "correlations, time-series trends. Use plain analyst language."
+    ),
+}
 
 
 def _safe_json_extract(text: str) -> dict:
@@ -519,14 +767,28 @@ def _safe_json_extract(text: str) -> dict:
 
 
 def _build_prompt(profile: dict, mode: str, custom: str, benchmarks: list,
-                  grounded: dict | None = None, clean_summary: dict | None = None) -> str:
+                  grounded: dict | None = None,
+                  clean_summary: dict | None = None,
+                  archetype: object | None = None,
+                  playbook: dict | None = None) -> str:
     tpl = TEMPLATES.get(mode, TEMPLATES["general"])
+    arch_name = getattr(archetype, "name", "generic")
+    arch_conf = getattr(archetype, "confidence", 0.0)
+    arch_desc = arch_mod.archetype_description(arch_name)
+    role_cols = getattr(archetype, "role_columns", {}) or {}
+    vocab = ARCHETYPE_VOCAB.get(arch_name, ARCHETYPE_VOCAB["generic"])
+
     return ANALYSIS_PROMPT.format(
-        profile_json=json.dumps(profile, default=str)[:10000],
-        stats_json=json.dumps(grounded or {}, default=str)[:8000],
+        archetype_name=arch_name,
+        archetype_conf=arch_conf,
+        archetype_desc=arch_desc,
+        role_columns=json.dumps(role_cols, default=str)[:1000],
+        vocab=vocab,
+        playbook_json=json.dumps(playbook or {}, default=str)[:6000],
+        profile_json=json.dumps(profile, default=str)[:6000],
+        stats_json=json.dumps(grounded or {}, default=str)[:6000],
         clean_json=json.dumps(clean_summary or {}, default=str)[:4000],
         mode=tpl["name"],
-        kpis=tpl["kpis"],
         guidance=tpl["guidance"],
         custom=custom or "None",
         benchmarks=json.dumps(benchmarks) if benchmarks else "None",
@@ -584,9 +846,12 @@ def call_gemini(api_key: str, prompt: str, strict: bool = False) -> str:
 def analyze(provider: str, api_key: str, profile: dict, mode: str,
             custom: str, benchmarks: list,
             grounded: dict | None = None,
-            clean_summary: dict | None = None) -> dict:
+            clean_summary: dict | None = None,
+            archetype: object | None = None,
+            playbook: dict | None = None) -> dict:
     """Unified AI provider call with one retry on malformed JSON."""
-    prompt = _build_prompt(profile, mode, custom, benchmarks, grounded, clean_summary)
+    prompt = _build_prompt(profile, mode, custom, benchmarks, grounded,
+                            clean_summary, archetype=archetype, playbook=playbook)
     caller = {"openai": call_openai, "anthropic": call_anthropic, "gemini": call_gemini}.get(provider)
     if not caller:
         raise ValueError(f"Unknown provider: {provider}")
@@ -1279,13 +1544,24 @@ def api_analyze():
         # 2. Profile
         profile = profile_dataframe(df)
 
-        # 3. Compute authoritative summary stats BEFORE the AI runs. These
+        # 3. Detect B2C archetype + run the matching senior-analyst playbook.
+        # This is the specialization layer: instead of generic stats, we
+        # apply the right analytical playbook (RFM/cohorts for orders,
+        # ROAS/CAC for marketing, etc.) for the detected dataset type.
+        archetype = arch_mod.detect_archetype(df)
+        playbook = playbook_mod.run_playbook(archetype.name, df, archetype.role_columns)
+        state["archetype"] = archetype
+        state["playbook"] = playbook
+
+        # 4. Compute authoritative summary stats BEFORE the AI runs. These
         # numbers are the ground truth the narrative must reference.
         grounded = compute_grounded_stats(df)
 
-        # 4. AI narrative — no longer proposes charts, only writes prose.
+        # 5. AI narrative — given the archetype + playbook output so it
+        # speaks the right analyst vocabulary and cites real numbers.
         ai = analyze(provider, api_key, profile, mode, custom, benchmarks,
-                     grounded=grounded, clean_summary=clean_summary)
+                     grounded=grounded, clean_summary=clean_summary,
+                     archetype=archetype, playbook=playbook)
 
         # 5. Build charts deterministically in code (guaranteed-correct).
         charts = build_auto_charts(df)
@@ -1322,6 +1598,14 @@ def api_analyze():
             "rows": int(len(df)),
             "cols": int(len(df.columns)),
             "mode": TEMPLATES.get(mode, TEMPLATES["general"])["name"],
+            "archetype": {
+                "name": archetype.name,
+                "confidence": archetype.confidence,
+                "description": arch_mod.archetype_description(archetype.name),
+                "signals": archetype.signals,
+                "role_columns": archetype.role_columns,
+            },
+            "playbook": playbook,
             "clean_summary": clean_summary,
             "profile": {
                 "columns": profile["columns"],
