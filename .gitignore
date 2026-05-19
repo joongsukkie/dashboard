@@ -18,3 +18,21 @@ Nike_Sales_*.csv
 build_dashboard.py
 nike_analysis.py
 nike_dashboard.html
+
+# Local fixture datasets — too large / not redistributable.
+# The eval harness picks up CSVs from fixtures/<archetype>/ at runtime.
+# Drop your own datasets in there locally; don't commit them.
+fixtures/**/*.csv
+fixtures/**/*.parquet
+
+# Source-of-truth CSVs in the project root (kept locally for testing).
+online_retail_II*.csv
+WA_Fn-UseC_-Telco-Customer-Churn*.csv
+amazon*.csv
+Nike_Sales*.csv
+archive*/
+
+# But keep the directory structure so the harness still has the dirs.
+!fixtures/
+!fixtures/*/
+!fixtures/**/.gitkeep

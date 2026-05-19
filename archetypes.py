@@ -34,6 +34,8 @@ class ArchetypeMatch:
 ROLE_PATTERNS: dict[str, list[str]] = {
     "order_id":    [r"order[\s_-]?id", r"order[\s_-]?no", r"order[\s_-]?number",
                     r"transaction[\s_-]?id", r"invoice[\s_-]?(id|no|number)",
+                    r"^invoice$",         # UCI Online Retail uses bare "Invoice"
+                    r"\bdocument[\s_-]?no\b",  # ERP exports
                     r"\border\b"],
     "line_item_id":[r"line[\s_-]?item", r"line[\s_-]?id", r"item[\s_-]?id"],
     "customer_id": [r"customer[\s_-]?id", r"customer[\s_-]?no", r"user[\s_-]?id",
@@ -64,15 +66,23 @@ ROLE_PATTERNS: dict[str, list[str]] = {
     "session_id":  [r"session[\s_-]?id", r"visit[\s_-]?id"],
     "event":       [r"^event$", r"event[\s_-]?name", r"action", r"event[\s_-]?type"],
     "page":        [r"^page$", r"page[\s_-]?path", r"page[\s_-]?url", r"url"],
-    "status":      [r"^status$", r"subscription[\s_-]?status", r"state"],
-    "plan":        [r"^plan$", r"tier", r"subscription[\s_-]?plan", r"package"],
-    "mrr":         [r"\bmrr\b", r"monthly[\s_-]?recurring"],
+    "status":      [r"^status$", r"subscription[\s_-]?status", r"state",
+                    r"\bchurn(ed)?$",     # Telco churn data uses bare "Churn"
+                    r"churn[\s_-]?flag"],
+    "plan":        [r"^plan$", r"tier", r"subscription[\s_-]?plan", r"package",
+                    r"^contract$", r"contract[\s_-]?type"],  # telco / saas contracts
+    "mrr":         [r"\bmrr\b", r"monthly[\s_-]?recurring",
+                    r"monthly[\s_-]?charge", r"recurring[\s_-]?charge"],
+    "subscription_tenure": [r"^tenure$", r"tenure[\s_-]?months", r"months[\s_-]?as[\s_-]?customer"],
     "rating":      [r"^rating$", r"stars?", r"score", r"^nps$", r"^csat$"],
     "review_text": [r"review[\s_-]?(text|body|content)", r"^review$", r"comment",
                     r"feedback", r"verbatim"],
     "date":        [r"^date$", r"created[\s_-]?at", r"timestamp", r"event[\s_-]?date",
                     r"order[\s_-]?date", r"purchase[\s_-]?date", r"submitted",
-                    r"signup", r"signed[\s_-]?up"],
+                    r"signup", r"signed[\s_-]?up",
+                    r"invoice[\s_-]?date",        # UCI Online Retail
+                    r"purchase[\s_-]?timestamp",  # Olist
+                    r"approved[\s_-]?at"],
     "return_flag": [r"is[\s_-]?return", r"returned", r"refund(ed)?", r"is[\s_-]?refund"],
     "return_reason":[r"return[\s_-]?reason", r"refund[\s_-]?reason"],
     "stock":       [r"^stock$", r"inventory", r"on[\s_-]?hand", r"qty[\s_-]?available"],
@@ -163,11 +173,19 @@ def score_archetypes(df: pd.DataFrame, roles: dict[str, str]) -> dict[str, dict]
     if cust_role:
         u = _row_grain_unique_ratio(df, cust_role)
         if u >= 0.95:
-            add("customers", 0.40,
-                f"~1 row per customer ({cust_role}: {u:.0%} unique)")
-            # Penalize orders since a unique-customer file is not an orders log.
-            scores["orders"]["score"] -= 0.20
-            scores["orders"]["signals"].append("(penalty) customer column is unique per row")
+            # IMPORTANT: if order_id is also present, this is just a 1:1
+            # order-to-customer log (very common in DTC) — not a customer
+            # master. Don't penalize orders in that case.
+            if "order_id" not in roles:
+                add("customers", 0.40,
+                    f"~1 row per customer ({cust_role}: {u:.0%} unique)")
+                scores["orders"]["score"] -= 0.20
+                scores["orders"]["signals"].append(
+                    "(penalty) customer column is unique per row")
+            else:
+                # Mild bump only — orders is still the primary read.
+                add("customers", 0.10,
+                    f"customer-unique grain (but order_id present, so orders)")
 
     # ---------------- marketing campaigns ------------------------------------
     marketing_cols = sum(1 for r in ("spend", "impressions", "clicks",
@@ -199,16 +217,34 @@ def score_archetypes(df: pd.DataFrame, roles: dict[str, str]) -> dict[str, dict]
     if "plan" in roles:
         add("subscriptions", 0.30, f"plan/tier column ({roles['plan']})")
     if "mrr" in roles:
-        add("subscriptions", 0.40, f"MRR column ({roles['mrr']})")
-    # Status values that look subscription-y.
+        add("subscriptions", 0.40, f"MRR/monthly-charge column ({roles['mrr']})")
+    if "subscription_tenure" in roles:
+        # Tenure (months as a customer) is a hallmark subscription metric.
+        add("subscriptions", 0.30,
+            f"tenure column ({roles['subscription_tenure']})")
+        # When tenure is present, "customer-unique grain" is actually
+        # subscriptions, not a plain customer master.
+        scores["customers"]["score"] -= 0.20
+        scores["customers"]["signals"].append(
+            "(penalty) tenure column suggests subscriptions, not customer master")
+    # Status values that look subscription-y. Now includes telco-style
+    # Churn yes/no and Contract enum values.
     status_col = roles.get("status")
     if status_col and df[status_col].dtype == object:
         vals = set(df[status_col].dropna().astype(str).str.lower().unique())
         sub_vals = {"active", "canceled", "cancelled", "paused", "trialing",
-                    "past_due", "churned"}
+                    "past_due", "churned", "yes", "no"}
         if vals & sub_vals:
             add("subscriptions", 0.25,
                 f"status values look subscription-y: {sorted(vals & sub_vals)}")
+    plan_col = roles.get("plan")
+    if plan_col and df[plan_col].dtype == object:
+        vals = set(df[plan_col].dropna().astype(str).str.lower().unique())
+        contract_vals = {"month-to-month", "one year", "two year",
+                         "monthly", "annual", "yearly", "quarterly"}
+        if vals & contract_vals:
+            add("subscriptions", 0.25,
+                f"plan values look like contract terms: {sorted(vals & contract_vals)}")
 
     # ---------------- reviews / NPS ------------------------------------------
     if "review_text" in roles:
