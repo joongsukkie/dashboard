@@ -407,11 +407,763 @@ def marketing_playbook(df: pd.DataFrame, roles: dict) -> dict:
 
 
 # -----------------------------------------------------------------------------
+# Customers playbook — one row per person, no transaction detail
+# -----------------------------------------------------------------------------
+def customers_playbook(df: pd.DataFrame, roles: dict) -> dict:
+    """When the file is a customer master (1 row/person), the right analysis
+    is tenure cohorts, acquisition-channel mix, geographic mix, and (when
+    available) simple CLV / repeat-purchase indicators."""
+    out: dict = {"kpis": [], "segments": [], "tables": [],
+                 "alerts": [], "narrative_hooks": {}}
+
+    cust_col = roles.get("customer_id") or roles.get("email")
+    date_col = roles.get("date")
+    channel_col = roles.get("channel")
+    n = len(df)
+
+    if cust_col:
+        out["kpis"].append(_kpi("Unique customers", f"{df[cust_col].nunique():,}"))
+    else:
+        out["kpis"].append(_kpi("Rows", f"{n:,}"))
+
+    # Tenure (signup date) summary.
+    if date_col and date_col in df.columns and df[date_col].dtype.kind == "M":
+        nn = df[date_col].dropna()
+        if not nn.empty:
+            span_days = (nn.max() - nn.min()).days
+            out["kpis"].append(_kpi("Signup range",
+                                    _date_range_summary(df[date_col]),
+                                    detail=f"{span_days} days"))
+            # Average tenure as of today (or latest signup if before today).
+            today = pd.Timestamp.utcnow().tz_localize(None)
+            ref = max(today, nn.max())
+            tenure_days = (ref - nn).dt.days
+            out["kpis"].append(_kpi("Avg tenure",
+                                    f"{tenure_days.mean():.0f} days",
+                                    detail=f"median {tenure_days.median():.0f} days"))
+
+    # Acquisition-channel mix.
+    if channel_col and channel_col in df.columns:
+        vc = df[channel_col].dropna().value_counts().head(10)
+        out["tables"].append({
+            "title": f"Acquisition-channel mix ({channel_col})",
+            "columns": [channel_col, "Customers", "Share"],
+            "rows": [[str(k), f"{int(v):,}", _pct(v / n)] for k, v in vc.items()],
+            "note": "Counts of unique customer rows per channel.",
+        })
+
+    # Geographic mix (look for country / region / state column).
+    geo_col = None
+    for c in df.columns:
+        cl = str(c).lower()
+        if cl in ("country", "region", "state", "city") and df[c].dtype == object:
+            geo_col = c
+            break
+    if geo_col:
+        vc = df[geo_col].dropna().value_counts().head(10)
+        out["tables"].append({
+            "title": f"Top {geo_col}s",
+            "columns": [geo_col, "Customers", "Share"],
+            "rows": [[str(k), f"{int(v):,}", _pct(v / n)] for k, v in vc.items()],
+            "note": "",
+        })
+
+    # Tenure cohorts — sign-up month → cohort size.
+    if date_col and date_col in df.columns and df[date_col].dtype.kind == "M":
+        period = df[date_col].dt.to_period("M")
+        vc = period.value_counts().sort_index()
+        out["tables"].append({
+            "title": "Sign-ups by month (cohort sizes)",
+            "columns": ["Cohort month", "New customers"],
+            "rows": [[str(k), f"{int(v):,}"] for k, v in vc.items()][-12:],
+            "note": "Showing most recent 12 months.",
+        })
+        # Cohort concentration as a narrative hook.
+        if len(vc) >= 2:
+            biggest = vc.idxmax()
+            out["narrative_hooks"]["biggest_signup_cohort"] = str(biggest)
+            out["narrative_hooks"]["biggest_signup_n"] = int(vc.max())
+
+    if n < 100:
+        out["alerts"].append(
+            f"Small customer file ({n} rows) — channel/geo shares are noisy."
+        )
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Subscriptions playbook — status timelines, MRR, churn
+# -----------------------------------------------------------------------------
+def subscriptions_playbook(df: pd.DataFrame, roles: dict) -> dict:
+    out: dict = {"kpis": [], "segments": [], "tables": [],
+                 "alerts": [], "narrative_hooks": {}}
+
+    status_col = roles.get("status")
+    plan_col   = roles.get("plan")
+    mrr_col    = roles.get("mrr") or roles.get("amount")
+    cust_col   = roles.get("customer_id") or roles.get("email")
+    start_col  = roles.get("date")
+
+    n = len(df)
+
+    if cust_col:
+        out["kpis"].append(_kpi("Subscribers", f"{df[cust_col].nunique():,}"))
+    else:
+        out["kpis"].append(_kpi("Subscription rows", f"{n:,}"))
+
+    # ---- Status distribution -------------------------------------------------
+    if status_col and status_col in df.columns:
+        norm = df[status_col].dropna().astype(str).str.lower().str.strip()
+        vc = norm.value_counts()
+        active_n = int(vc.get("active", 0) + vc.get("trialing", 0))
+        churned_n = int(vc.get("canceled", 0) + vc.get("cancelled", 0)
+                        + vc.get("churned", 0))
+        if active_n + churned_n > 0:
+            churn_rate = churned_n / (active_n + churned_n)
+            out["kpis"].append(_kpi("Gross churn rate", _pct(churn_rate),
+                                    detail=f"{churned_n:,} canceled of "
+                                           f"{active_n+churned_n:,} ever-active"))
+        out["tables"].append({
+            "title": "Status distribution",
+            "columns": ["Status", "Subscribers", "Share"],
+            "rows": [[str(k), f"{int(v):,}", _pct(v / max(1, len(norm)))]
+                     for k, v in vc.items()],
+            "note": "Lower-cased; trialing counted as active for churn math.",
+        })
+
+    # ---- Plan breakdown ------------------------------------------------------
+    if plan_col and plan_col in df.columns and mrr_col and mrr_col in df.columns:
+        g = (df.groupby(plan_col)[mrr_col]
+               .agg(["count", "sum", "mean"])
+               .sort_values("sum", ascending=False)
+               .reset_index())
+        out["tables"].append({
+            "title": f"MRR by plan ({plan_col})",
+            "columns": [plan_col, "Subscribers", "Total MRR", "Avg MRR / sub"],
+            "rows": [[str(r[plan_col]), f"{int(r['count']):,}",
+                      _money(float(r["sum"])), _money(float(r["mean"]))]
+                     for _, r in g.iterrows()],
+            "note": "MRR summed across all rows for the plan.",
+        })
+
+    # ---- MRR total + ARR -----------------------------------------------------
+    if mrr_col and mrr_col in df.columns:
+        total_mrr = float(df[mrr_col].dropna().sum())
+        out["kpis"].insert(0, _kpi("Total MRR", _money(total_mrr),
+                                   detail="sum of recurring revenue rows"))
+        out["kpis"].insert(1, _kpi("Implied ARR", _money(total_mrr * 12),
+                                   detail="MRR × 12"))
+        # Active-only MRR if we can isolate it.
+        if status_col and status_col in df.columns:
+            active = df[df[status_col].astype(str).str.lower()
+                        .isin(("active", "trialing"))]
+            if len(active):
+                out["kpis"].insert(2, _kpi("Active MRR",
+                                           _money(float(active[mrr_col].sum())),
+                                           detail=f"{len(active):,} active subs"))
+
+    # ---- Cohort: sign-ups by month ------------------------------------------
+    if start_col and start_col in df.columns and df[start_col].dtype.kind == "M":
+        period = df[start_col].dt.to_period("M")
+        vc = period.value_counts().sort_index()
+        out["tables"].append({
+            "title": "New-subscription cohorts (by start month)",
+            "columns": ["Start month", "New subs"],
+            "rows": [[str(k), f"{int(v):,}"] for k, v in vc.items()][-12:],
+            "note": "Most recent 12 cohorts.",
+        })
+
+    # ---- Save-rate proxy (paused vs canceled) -------------------------------
+    if status_col and status_col in df.columns:
+        norm = df[status_col].dropna().astype(str).str.lower().str.strip()
+        paused = int((norm == "paused").sum())
+        ever_left = paused + int((norm.isin(("canceled","cancelled","churned"))).sum())
+        if ever_left > 0:
+            save_rate = paused / ever_left
+            out["narrative_hooks"]["save_rate_proxy"] = round(save_rate, 4)
+            out["kpis"].append(_kpi("Save-rate proxy", _pct(save_rate),
+                                    detail="paused ÷ (paused + canceled)"))
+
+    if n < 100:
+        out["alerts"].append(f"Small subscription file ({n} rows) — churn rates are noisy.")
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Sessions playbook — funnel, sources, bounce
+# -----------------------------------------------------------------------------
+def sessions_playbook(df: pd.DataFrame, roles: dict) -> dict:
+    out: dict = {"kpis": [], "segments": [], "tables": [],
+                 "alerts": [], "narrative_hooks": {}}
+
+    session_col = roles.get("session_id")
+    event_col   = roles.get("event")
+    page_col    = roles.get("page")
+    channel_col = roles.get("channel")
+    date_col    = roles.get("date")
+
+    n = len(df)
+    out["kpis"].append(_kpi("Total events", f"{n:,}"))
+    if session_col and session_col in df.columns:
+        n_sessions = df[session_col].nunique()
+        out["kpis"].append(_kpi("Unique sessions", f"{n_sessions:,}",
+                                detail=f"{n / max(1, n_sessions):.1f} events / session"))
+        # Bounce = sessions with exactly 1 event.
+        ev_per_sess = df.groupby(session_col).size()
+        bounce_rate = (ev_per_sess == 1).mean()
+        out["kpis"].append(_kpi("Bounce rate (1-event sessions)",
+                                _pct(float(bounce_rate))))
+
+    # ---- Funnel by event ----------------------------------------------------
+    if event_col and event_col in df.columns:
+        vc = df[event_col].dropna().value_counts()
+        # Standard e-commerce ladder; only include events that exist.
+        funnel_order = ["page_view", "view_item", "add_to_cart",
+                        "begin_checkout", "purchase"]
+        present = [e for e in funnel_order if e in vc.index]
+        if len(present) >= 2:
+            rows = []
+            top = vc[present[0]]
+            for i, ev in enumerate(present):
+                c = int(vc[ev])
+                drop = (1 - c / vc[present[i-1]]) if i > 0 else 0.0
+                rows.append([ev, f"{c:,}", _pct(c / top),
+                             _pct(drop) if i > 0 else "—"])
+            out["tables"].append({
+                "title": "Conversion funnel",
+                "columns": ["Event", "Count", "% of top", "Step drop-off"],
+                "rows": rows,
+                "note": "Standard e-commerce ladder; only events present in your data.",
+            })
+            # Headline funnel finish-rate for the narrative.
+            if "purchase" in vc.index and present:
+                out["narrative_hooks"]["funnel_finish_rate"] = round(
+                    float(vc["purchase"] / vc[present[0]]), 4)
+        else:
+            # Show generic top-N events instead.
+            out["tables"].append({
+                "title": f"Top events ({event_col})",
+                "columns": ["Event", "Count", "Share"],
+                "rows": [[str(k), f"{int(v):,}", _pct(v / n)] for k, v in vc.head(10).items()],
+                "note": "",
+            })
+
+    # ---- Source / channel mix ----------------------------------------------
+    if channel_col and channel_col in df.columns:
+        vc = df[channel_col].dropna().value_counts().head(10)
+        out["tables"].append({
+            "title": f"Traffic source mix ({channel_col})",
+            "columns": [channel_col, "Events", "Share"],
+            "rows": [[str(k), f"{int(v):,}", _pct(v / n)] for k, v in vc.items()],
+            "note": "",
+        })
+
+    # ---- Top pages ----------------------------------------------------------
+    if page_col and page_col in df.columns:
+        vc = df[page_col].dropna().value_counts().head(10)
+        out["tables"].append({
+            "title": f"Top {page_col}",
+            "columns": [page_col, "Hits", "Share"],
+            "rows": [[str(k), f"{int(v):,}", _pct(v / n)] for k, v in vc.items()],
+            "note": "",
+        })
+
+    if n < 200:
+        out["alerts"].append(f"Small sessions log ({n} events) — funnel rates are unstable.")
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Reviews playbook — rating distribution, low-rating SKUs, velocity
+# -----------------------------------------------------------------------------
+def reviews_playbook(df: pd.DataFrame, roles: dict) -> dict:
+    out: dict = {"kpis": [], "segments": [], "tables": [],
+                 "alerts": [], "narrative_hooks": {}}
+
+    rating_col = roles.get("rating")
+    text_col   = roles.get("review_text")
+    sku_col    = roles.get("sku") or roles.get("product_name")
+    date_col   = roles.get("date")
+
+    n = len(df)
+    out["kpis"].append(_kpi("Reviews", f"{n:,}"))
+
+    if rating_col and rating_col in df.columns:
+        ratings = pd.to_numeric(df[rating_col], errors="coerce").dropna()
+        if len(ratings):
+            avg = float(ratings.mean())
+            out["kpis"].append(_kpi("Avg rating", f"{avg:.2f}",
+                                    detail=f"median {ratings.median():.1f}"))
+            # NPS-style buckets if ratings look 0–10.
+            if ratings.max() <= 10 and ratings.max() > 5:
+                promoters = (ratings >= 9).mean()
+                detractors = (ratings <= 6).mean()
+                nps = (promoters - detractors) * 100
+                out["kpis"].append(_kpi("NPS", f"{nps:.0f}",
+                                        detail=f"promoters {_pct(promoters)}  detractors {_pct(detractors)}"))
+            else:
+                # 1–5 star buckets.
+                low = float((ratings <= 2).mean())
+                high = float((ratings >= 4).mean())
+                out["kpis"].append(_kpi("% low ratings (≤2)", _pct(low)))
+                out["kpis"].append(_kpi("% high ratings (≥4)", _pct(high)))
+
+            # Histogram table.
+            vc = ratings.round().astype(int).value_counts().sort_index()
+            out["tables"].append({
+                "title": "Rating distribution",
+                "columns": ["Rating", "Count", "Share"],
+                "rows": [[str(k), f"{int(v):,}", _pct(v / len(ratings))]
+                         for k, v in vc.items()],
+                "note": "",
+            })
+
+    # ---- Low-rated SKUs / products -----------------------------------------
+    if rating_col and sku_col and sku_col in df.columns:
+        try:
+            g = df.groupby(sku_col)[rating_col].agg(
+                avg="mean", count="count").reset_index()
+            g = g[g["count"] >= 5].sort_values("avg").head(10)
+            if len(g):
+                out["tables"].append({
+                    "title": "Lowest-rated SKUs (≥5 reviews)",
+                    "columns": [sku_col, "Avg rating", "Reviews"],
+                    "rows": [[str(r[sku_col]), f"{float(r['avg']):.2f}",
+                              f"{int(r['count']):,}"] for _, r in g.iterrows()],
+                    "note": "Sorted ascending; investigate these first.",
+                })
+                worst = g.iloc[0]
+                out["narrative_hooks"]["worst_sku"] = {
+                    "sku": str(worst[sku_col]),
+                    "avg_rating": round(float(worst["avg"]), 2),
+                    "n_reviews": int(worst["count"]),
+                }
+        except Exception:
+            pass
+
+    # ---- Review velocity ----------------------------------------------------
+    if date_col and date_col in df.columns and df[date_col].dtype.kind == "M":
+        period = df[date_col].dt.to_period("M")
+        vc = period.value_counts().sort_index()
+        if len(vc) >= 2:
+            out["tables"].append({
+                "title": "Review velocity (monthly)",
+                "columns": ["Month", "Reviews"],
+                "rows": [[str(k), f"{int(v):,}"] for k, v in vc.items()][-12:],
+                "note": "Most recent 12 months.",
+            })
+
+    # Average review length — a free hint for the AI narrative.
+    if text_col and text_col in df.columns:
+        try:
+            avg_len = df[text_col].dropna().astype(str).str.len().mean()
+            out["kpis"].append(_kpi("Avg review length", f"{avg_len:.0f} chars"))
+        except Exception:
+            pass
+
+    if n < 100:
+        out["alerts"].append(f"Few reviews ({n}) — averages are noisy.")
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Catalog playbook — margin, stockout risk, long-tail share
+# -----------------------------------------------------------------------------
+def catalog_playbook(df: pd.DataFrame, roles: dict) -> dict:
+    out: dict = {"kpis": [], "segments": [], "tables": [],
+                 "alerts": [], "narrative_hooks": {}}
+
+    sku_col   = roles.get("sku")
+    cat_col   = roles.get("category")
+    price_col = roles.get("unit_price") or roles.get("amount")
+    cost_col  = roles.get("cost")
+    stock_col = roles.get("stock")
+
+    n = len(df)
+    out["kpis"].append(_kpi("SKUs", f"{n:,}"))
+
+    # Margin per row.
+    if price_col and cost_col and price_col in df.columns and cost_col in df.columns:
+        margin = df[price_col] - df[cost_col]
+        margin_pct = margin / df[price_col].replace(0, np.nan)
+        avg_margin = float(margin_pct.dropna().mean())
+        out["kpis"].append(_kpi("Avg margin %", _pct(avg_margin),
+                                detail=f"median {float(margin_pct.dropna().median()):.0%}"))
+
+        if cat_col and cat_col in df.columns:
+            g = (df.assign(_m=margin_pct, _r=margin)
+                   .groupby(cat_col).agg(skus=(cat_col, "size"),
+                                          avg_margin=("_m", "mean"),
+                                          total_gross=("_r", "sum"))
+                   .sort_values("avg_margin", ascending=False).reset_index())
+            out["tables"].append({
+                "title": f"Margin by {cat_col}",
+                "columns": [cat_col, "SKUs", "Avg margin %", "Total gross"],
+                "rows": [[str(r[cat_col]), f"{int(r['skus']):,}",
+                          _pct(float(r["avg_margin"])),
+                          _money(float(r["total_gross"]))] for _, r in g.iterrows()],
+                "note": "Average margin weighted by row, not by sales.",
+            })
+
+    # Stockout risk.
+    if stock_col and stock_col in df.columns:
+        stock = pd.to_numeric(df[stock_col], errors="coerce")
+        out_of_stock = int((stock <= 0).sum())
+        low_stock = int(((stock > 0) & (stock <= 5)).sum())
+        out["kpis"].append(_kpi("Out of stock", f"{out_of_stock:,}",
+                                detail=f"of {n:,} SKUs"))
+        out["kpis"].append(_kpi("Low stock (≤5 units)", f"{low_stock:,}"))
+        if cat_col and cat_col in df.columns:
+            g = (df.assign(_oos=(stock <= 0))
+                   .groupby(cat_col)["_oos"].agg(["sum", "size"])
+                   .sort_values("sum", ascending=False).head(10).reset_index())
+            out["tables"].append({
+                "title": f"Stockout risk by {cat_col}",
+                "columns": [cat_col, "Out-of-stock SKUs", "Total SKUs"],
+                "rows": [[str(r[cat_col]), f"{int(r['sum']):,}", f"{int(r['size']):,}"]
+                         for _, r in g.iterrows()],
+                "note": "",
+            })
+
+    # Long-tail share — Pareto on a per-SKU value (price, or stock × price if both).
+    if price_col and price_col in df.columns and sku_col and sku_col in df.columns:
+        val = df[price_col].fillna(0)
+        if stock_col and stock_col in df.columns:
+            val = val * pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
+        val = val.sort_values(ascending=False)
+        total = float(val.sum()) or 1.0
+        top_20 = max(1, int(len(val) * 0.20))
+        share = float(val.head(top_20).sum() / total)
+        out["kpis"].append(_kpi("Top 20% of SKUs hold",
+                                _pct(share),
+                                detail="of total catalog value"))
+        out["narrative_hooks"]["pareto_top20_share"] = round(share, 4)
+
+    if n < 30:
+        out["alerts"].append(f"Tiny catalog ({n} SKUs) — segment patterns won't be meaningful.")
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Archetype-aware chart builders
+# -----------------------------------------------------------------------------
+def _fig_dict(fig) -> dict:
+    """Convert a plotly fig to a JSON-safe dict (uses plotly's own encoder)."""
+    import json as _json
+    from plotly.utils import PlotlyJSONEncoder
+    return _json.loads(_json.dumps(fig.to_dict(), cls=PlotlyJSONEncoder))
+
+
+# Distinct categorical hues — same palette the rest of the app uses.
+CHART_PALETTE = [
+    "#15803D", "#D97706", "#2563EB", "#DC2626", "#7C3AED",
+    "#0891B2", "#DB2777", "#CA8A04", "#4B5650", "#059669",
+]
+
+
+def _layout(fig, title: str):
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=14, family="Inter, system-ui",
+                                         color="#141815"),
+                   x=0.02, xanchor="left"),
+        margin=dict(l=40, r=20, t=46, b=40),
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        font=dict(family="Inter, system-ui", size=12, color="#1A1A2E"),
+        xaxis=dict(gridcolor="#F1F5F9", linecolor="#E2E8F0"),
+        yaxis=dict(gridcolor="#F1F5F9", linecolor="#E2E8F0"),
+    )
+    return fig
+
+
+def _orders_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    charts = []
+    date_col = roles.get("date")
+    cust_col = roles.get("customer_id") or roles.get("email")
+
+    # Cohort retention heatmap (the senior-analyst chart for orders).
+    cohorts = playbook.get("cohorts") if playbook else None
+    if cohorts and cohorts.get("values"):
+        vals = np.array(cohorts["values"], dtype=float)
+        fig = go.Figure(data=go.Heatmap(
+            z=vals * 100,
+            x=[f"M+{c}" for c in cohorts["offsets"]],
+            y=cohorts["periods"],
+            colorscale=[[0, "#FFFFFF"], [0.5, "#86EFAC"], [1.0, "#15803D"]],
+            zmin=0, zmax=100,
+            colorbar=dict(title="% retained", ticksuffix="%"),
+            hovertemplate="Cohort %{y}<br>%{x}: %{z:.1f}% retained<extra></extra>",
+        ))
+        fig = _layout(fig, "Cohort retention — % of customers active N months after first purchase")
+        charts.append({
+            "title": "Cohort retention heatmap",
+            "insight": "Each row is a sign-up cohort; columns are months after first purchase. "
+                       "Look diagonally — if recent cohorts retain worse, acquisition quality is dropping.",
+            "figure": _fig_dict(fig),
+        })
+
+    # RFM segment bar (revenue and customer count).
+    segs = playbook.get("segments") if playbook else None
+    if segs:
+        seg_df = pd.DataFrame(segs)
+        fig = px.bar(seg_df, x="name", y="revenue", color="name",
+                     color_discrete_sequence=CHART_PALETTE,
+                     hover_data={"n": True, "revenue_share": ":.1%", "avg_frequency": ":.1f"})
+        fig.update_layout(showlegend=False)
+        fig.update_xaxes(title_text="RFM segment")
+        fig.update_yaxes(title_text="Revenue")
+        fig = _layout(fig, "RFM segment revenue")
+        charts.append({
+            "title": "RFM segment revenue",
+            "insight": "Champions and Loyal segments should dominate revenue. "
+                       "If 'At Risk' or 'Hibernating' bars are tall, you have a retention problem, not a sales problem.",
+            "figure": _fig_dict(fig),
+        })
+    return charts
+
+
+def _marketing_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.express as px
+    charts = []
+    chan_col = roles.get("channel")
+    spend_col = roles.get("spend")
+    rev_col = roles.get("amount")
+
+    if chan_col and spend_col and rev_col and all(c in df.columns for c in (chan_col, spend_col, rev_col)):
+        g = df.groupby(chan_col).agg(spend=(spend_col, "sum"),
+                                      revenue=(rev_col, "sum")).reset_index()
+        g["roas"] = g["revenue"] / g["spend"].replace(0, np.nan)
+        g = g.sort_values("spend", ascending=False)
+        fig = px.bar(g, x=chan_col, y=["spend", "revenue"], barmode="group",
+                     color_discrete_sequence=[CHART_PALETTE[0], CHART_PALETTE[1]])
+        fig.update_layout(yaxis_title="$")
+        fig = _layout(fig, "Spend vs revenue by channel")
+        charts.append({
+            "title": "Spend vs revenue by channel",
+            "insight": "If revenue bars are shorter than spend bars on a channel, that channel is unprofitable. "
+                       "Reallocate budget from the worst ROAS to the best.",
+            "figure": _fig_dict(fig),
+        })
+
+    # Daily spend + revenue trend.
+    date_col = roles.get("date")
+    if date_col and spend_col and date_col in df.columns and df[date_col].dtype.kind == "M":
+        d = df[[date_col, spend_col] + ([rev_col] if rev_col and rev_col in df.columns else [])].dropna().copy()
+        d["_period"] = d[date_col].dt.to_period("W").dt.start_time
+        agg = d.groupby("_period").sum(numeric_only=True).reset_index()
+        ycols = [spend_col] + ([rev_col] if rev_col and rev_col in d.columns else [])
+        fig = px.line(agg, x="_period", y=ycols, markers=True,
+                      color_discrete_sequence=[CHART_PALETTE[0], CHART_PALETTE[1]])
+        fig = _layout(fig, "Weekly spend and revenue trend")
+        charts.append({
+            "title": "Weekly spend & revenue",
+            "insight": "Sustained gaps between the lines reveal periods of bad ROAS — investigate creative or audience fatigue then.",
+            "figure": _fig_dict(fig),
+        })
+    return charts
+
+
+def _subscriptions_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.express as px
+    charts = []
+    status_col = roles.get("status")
+    plan_col   = roles.get("plan")
+    mrr_col    = roles.get("mrr") or roles.get("amount")
+
+    if status_col and status_col in df.columns:
+        vc = df[status_col].astype(str).str.lower().value_counts().reset_index()
+        vc.columns = [status_col, "count"]
+        fig = px.bar(vc, x=status_col, y="count", color=status_col,
+                     color_discrete_sequence=CHART_PALETTE)
+        fig.update_layout(showlegend=False)
+        fig = _layout(fig, "Subscription status distribution")
+        charts.append({
+            "title": "Status distribution",
+            "insight": "Healthy SaaS shows >80% in active+trialing. A large 'paused' bucket signals a working save flow; "
+                       "a large 'past_due' bucket signals a billing problem.",
+            "figure": _fig_dict(fig),
+        })
+
+    if plan_col and mrr_col and plan_col in df.columns and mrr_col in df.columns:
+        g = df.groupby(plan_col)[mrr_col].sum().reset_index().sort_values(mrr_col, ascending=False)
+        fig = px.bar(g, x=plan_col, y=mrr_col, color=plan_col,
+                     color_discrete_sequence=CHART_PALETTE)
+        fig.update_layout(showlegend=False, yaxis_title="Total MRR")
+        fig = _layout(fig, f"MRR by {plan_col}")
+        charts.append({
+            "title": f"MRR by {plan_col}",
+            "insight": "The plan mix tells you where upgrade gravity is. Flat distribution = a pricing problem; "
+                       "all on the lowest plan = no expansion path.",
+            "figure": _fig_dict(fig),
+        })
+    return charts
+
+
+def _sessions_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    charts = []
+    event_col = roles.get("event")
+
+    # Funnel chart from the playbook's funnel rows.
+    funnel_tbl = next((t for t in (playbook or {}).get("tables", [])
+                       if t.get("title") == "Conversion funnel"), None)
+    if funnel_tbl and len(funnel_tbl["rows"]) >= 2:
+        stages = [r[0] for r in funnel_tbl["rows"]]
+        counts = [int(str(r[1]).replace(",", "")) for r in funnel_tbl["rows"]]
+        fig = go.Figure(go.Funnel(
+            y=stages, x=counts,
+            marker=dict(color=CHART_PALETTE[:len(stages)]),
+            textinfo="value+percent initial",
+        ))
+        fig = _layout(fig, "Conversion funnel")
+        charts.append({
+            "title": "Conversion funnel",
+            "insight": "Drop-off concentrated on one step is a UX bug; drop-off spread across all steps is a fit/audience problem.",
+            "figure": _fig_dict(fig),
+        })
+
+    chan_col = roles.get("channel")
+    if chan_col and chan_col in df.columns:
+        vc = df[chan_col].dropna().value_counts().head(10).reset_index()
+        vc.columns = [chan_col, "events"]
+        fig = px.pie(vc, names=chan_col, values="events", hole=0.4,
+                     color_discrete_sequence=CHART_PALETTE)
+        fig = _layout(fig, f"Traffic source mix ({chan_col})")
+        charts.append({
+            "title": "Traffic source mix",
+            "insight": "Single-source dependence (any segment >60%) is a concentration risk.",
+            "figure": _fig_dict(fig),
+        })
+    return charts
+
+
+def _reviews_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.express as px
+    charts = []
+    rating_col = roles.get("rating")
+    sku_col = roles.get("sku") or roles.get("product_name")
+    date_col = roles.get("date")
+
+    if rating_col and rating_col in df.columns:
+        ratings = pd.to_numeric(df[rating_col], errors="coerce").dropna().round().astype(int)
+        vc = ratings.value_counts().sort_index().reset_index()
+        vc.columns = ["rating", "count"]
+        # Color ratings by sentiment: red→yellow→green.
+        rating_palette = {1: "#DC2626", 2: "#F97316", 3: "#CA8A04",
+                          4: "#65A30D", 5: "#15803D"}
+        fig = px.bar(vc, x="rating", y="count",
+                     color="rating",
+                     color_discrete_map=rating_palette)
+        fig.update_layout(showlegend=False)
+        fig = _layout(fig, "Rating distribution")
+        charts.append({
+            "title": "Rating distribution",
+            "insight": "Bimodal distributions (lots of 1s and 5s) reveal polarizing products — usually fit, sizing, or expectations.",
+            "figure": _fig_dict(fig),
+        })
+
+    # Lowest-rated SKUs as a bar.
+    low_tbl = next((t for t in (playbook or {}).get("tables", [])
+                    if "Lowest-rated SKUs" in t.get("title", "")), None)
+    if low_tbl and len(low_tbl["rows"]):
+        sku_names = [r[0] for r in low_tbl["rows"]]
+        avg = [float(r[1]) for r in low_tbl["rows"]]
+        fig = px.bar(x=avg, y=sku_names, orientation="h",
+                     color_discrete_sequence=[CHART_PALETTE[3]])
+        fig.update_layout(showlegend=False)
+        fig.update_xaxes(title_text="Avg rating")
+        fig.update_yaxes(title_text="SKU", categoryorder="total descending")
+        fig = _layout(fig, "Lowest-rated SKUs (≥5 reviews)")
+        charts.append({
+            "title": "Lowest-rated SKUs",
+            "insight": "Start your product-fix backlog with the top of this list — every additional bad review compounds.",
+            "figure": _fig_dict(fig),
+        })
+    return charts
+
+
+def _catalog_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.express as px
+    charts = []
+    cat_col   = roles.get("category")
+    price_col = roles.get("unit_price") or roles.get("amount")
+    cost_col  = roles.get("cost")
+    stock_col = roles.get("stock")
+
+    # Margin by category bar.
+    if cat_col and price_col and cost_col and all(c in df.columns for c in (cat_col, price_col, cost_col)):
+        df2 = df.assign(_m=(df[price_col] - df[cost_col]) / df[price_col].replace(0, np.nan))
+        g = df2.groupby(cat_col)["_m"].mean().reset_index().sort_values("_m", ascending=False)
+        fig = px.bar(g, x=cat_col, y="_m", color=cat_col,
+                     color_discrete_sequence=CHART_PALETTE)
+        fig.update_layout(showlegend=False, yaxis_tickformat=".0%")
+        fig.update_yaxes(title_text="Avg margin %")
+        fig = _layout(fig, f"Margin by {cat_col}")
+        charts.append({
+            "title": f"Margin by {cat_col}",
+            "insight": "Low-margin categories often deserve a price increase before a marketing investment.",
+            "figure": _fig_dict(fig),
+        })
+
+    # Pareto curve on SKU value.
+    if price_col and price_col in df.columns:
+        val = df[price_col].fillna(0)
+        if stock_col and stock_col in df.columns:
+            val = val * pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
+        val = val.sort_values(ascending=False).reset_index(drop=True)
+        if len(val) >= 5 and val.sum() > 0:
+            cum = val.cumsum() / val.sum()
+            pct_sku = (np.arange(len(val)) + 1) / len(val)
+            fig = px.line(x=pct_sku * 100, y=cum * 100,
+                          color_discrete_sequence=[CHART_PALETTE[0]])
+            fig.update_xaxes(title_text="% of SKUs (ranked by value, desc)")
+            fig.update_yaxes(title_text="% of total catalog value")
+            fig = _layout(fig, "Pareto curve — SKU value concentration")
+            charts.append({
+                "title": "Pareto curve",
+                "insight": "Read where the curve hits 80% on the Y-axis — that % of SKUs holds 80% of catalog value.",
+                "figure": _fig_dict(fig),
+            })
+    return charts
+
+
+_CHART_BUILDERS = {
+    "orders":        _orders_charts,
+    "marketing":     _marketing_charts,
+    "subscriptions": _subscriptions_charts,
+    "sessions":      _sessions_charts,
+    "reviews":       _reviews_charts,
+    "catalog":       _catalog_charts,
+}
+
+
+def build_archetype_charts(archetype_name: str, df: pd.DataFrame,
+                           roles: dict, playbook: dict | None) -> list[dict]:
+    """Return archetype-specific charts. Safe to call alongside the generic
+    auto-chart builder — both lists are concatenated downstream."""
+    fn = _CHART_BUILDERS.get(archetype_name)
+    if not fn:
+        return []
+    try:
+        return fn(df, roles, playbook or {})
+    except Exception as e:
+        return [{"title": f"({archetype_name} chart builder failed)",
+                 "insight": str(e), "figure": None}]
+
+
+# -----------------------------------------------------------------------------
 # Dispatcher
 # -----------------------------------------------------------------------------
 PLAYBOOKS = {
-    "orders":    orders_playbook,
-    "marketing": marketing_playbook,
+    "orders":        orders_playbook,
+    "marketing":     marketing_playbook,
+    "customers":     customers_playbook,
+    "subscriptions": subscriptions_playbook,
+    "sessions":      sessions_playbook,
+    "reviews":       reviews_playbook,
+    "catalog":       catalog_playbook,
 }
 
 

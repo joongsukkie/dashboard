@@ -1534,6 +1534,7 @@ def api_analyze():
     mode = body.get("mode", "general")
     custom = body.get("custom", "")
     benchmarks = body.get("benchmarks", [])  # list of {metric, value}
+    archetype_override = (body.get("archetype_override") or "").strip().lower()
 
     try:
         # 1. Clean
@@ -1549,6 +1550,16 @@ def api_analyze():
         # apply the right analytical playbook (RFM/cohorts for orders,
         # ROAS/CAC for marketing, etc.) for the detected dataset type.
         archetype = arch_mod.detect_archetype(df)
+        # User override: if the detector got it wrong, the UI's dropdown
+        # forces a different archetype. We keep the role-column mapping
+        # since those rules are independent of the archetype label.
+        if archetype_override and archetype_override in playbook_mod.PLAYBOOKS:
+            archetype = arch_mod.ArchetypeMatch(
+                name=archetype_override,
+                confidence=1.0,  # user-asserted
+                signals=[f"user override (was {archetype.name})"] + archetype.signals,
+                role_columns=archetype.role_columns,
+            )
         playbook = playbook_mod.run_playbook(archetype.name, df, archetype.role_columns)
         state["archetype"] = archetype
         state["playbook"] = playbook
@@ -1563,8 +1574,18 @@ def api_analyze():
                      grounded=grounded, clean_summary=clean_summary,
                      archetype=archetype, playbook=playbook)
 
-        # 5. Build charts deterministically in code (guaranteed-correct).
-        charts = build_auto_charts(df)
+        # 5. Build charts deterministically in code. Archetype-aware charts
+        # (cohort heatmap, channel matrix, funnel, etc.) come first, generic
+        # ones (top-N, scatter) fill in behind them.
+        arch_charts = playbook_mod.build_archetype_charts(
+            archetype.name, df, archetype.role_columns, playbook)
+        generic_charts = build_auto_charts(df)
+        # Don't duplicate concepts the archetype chart already covered well
+        # (e.g. don't show two "channel" bars). Cheap heuristic by title prefix.
+        arch_titles_lower = {c.get("title", "").lower() for c in arch_charts}
+        generic_charts = [c for c in generic_charts
+                          if c.get("title", "").lower() not in arch_titles_lower]
+        charts = arch_charts + generic_charts
 
         # 6. Auto features
         corr = correlation_heatmap(df)

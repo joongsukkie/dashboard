@@ -156,7 +156,11 @@ async function runAnalysis() {
     const r = await fetch("/api/analyze", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({mode, custom, benchmarks, api_key: state.apiKey}),
+      body: JSON.stringify({
+        mode, custom, benchmarks,
+        api_key: state.apiKey,
+        archetype_override: state.archetypeOverride || null,
+      }),
     });
     const j = await r.json().catch(() => ({}));
     return { ok: r.ok, status: r.status, body: j };
@@ -331,24 +335,42 @@ function renderDashboard(d) {
 
 function renderArchetype(a) {
   const badge = $("#archetype-badge");
+  const sel = $("#archetype-override");
   if (!badge || !a) return;
   if (a.name === "generic") {
-    // Don't show a badge when we couldn't confidently classify — that
-    // would over-claim. Just stay quiet.
     badge.classList.add("hidden");
-    return;
+  } else {
+    const confPct = Math.round((a.confidence || 0) * 100);
+    const tone = confPct >= 80 ? "high" : confPct >= 55 ? "mid" : "low";
+    badge.className = `archetype-badge tone-${tone}`;
+    const overrideTag = (a.signals || []).some(s => /user override/i.test(s))
+      ? `<span class="ab-conf">user override</span>`
+      : `<span class="ab-conf">${confPct}% confidence</span>`;
+    badge.innerHTML = `
+      <span class="ab-dot"></span>
+      <span class="ab-label">Detected:</span>
+      <span class="ab-name">${esc(a.name)}</span>
+      <span class="ab-desc">${esc(a.description || "")}</span>
+      ${overrideTag}
+    `;
+    badge.classList.remove("hidden");
   }
-  const confPct = Math.round((a.confidence || 0) * 100);
-  const tone = confPct >= 80 ? "high" : confPct >= 55 ? "mid" : "low";
-  badge.className = `archetype-badge tone-${tone}`;
-  badge.innerHTML = `
-    <span class="ab-dot"></span>
-    <span class="ab-label">Detected:</span>
-    <span class="ab-name">${esc(a.name)}</span>
-    <span class="ab-desc">${esc(a.description || "")}</span>
-    <span class="ab-conf">${confPct}% confidence</span>
-  `;
-  badge.classList.remove("hidden");
+  // Always reveal the override dropdown so the user can correct mistakes.
+  if (sel) {
+    sel.classList.remove("hidden");
+    sel.value = state.archetypeOverride || "";
+    // Wire once.
+    if (!sel.dataset.wired) {
+      sel.dataset.wired = "1";
+      sel.addEventListener("change", () => {
+        state.archetypeOverride = sel.value || null;
+        if (state.fileBlob) {
+          // Re-run analysis with the forced archetype.
+          $("#run-analysis").click();
+        }
+      });
+    }
+  }
 }
 
 function renderPlaybook(archetype, pb) {

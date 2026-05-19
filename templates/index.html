@@ -184,7 +184,19 @@
       <div class="card span-12">
         <div class="card-label-row">
           <div class="card-label">Executive Summary</div>
-          <div id="archetype-badge" class="archetype-badge hidden"></div>
+          <div class="archetype-row">
+            <div id="archetype-badge" class="archetype-badge hidden"></div>
+            <select id="archetype-override" class="archetype-override hidden" title="Wrong archetype? Override here.">
+              <option value="">— override archetype —</option>
+              <option value="orders">Orders / transactions</option>
+              <option value="customers">Customers (one row per person)</option>
+              <option value="marketing">Marketing campaigns</option>
+              <option value="sessions">Web / app sessions</option>
+              <option value="subscriptions">Subscriptions</option>
+              <option value="reviews">Reviews / NPS</option>
+              <option value="catalog">Product catalog</option>
+            </select>
+          </div>
         </div>
         <p id="exec-summary" class="exec-text"></p>
       </div>
