@@ -1099,3 +1099,19 @@ textarea { resize: vertical; line-height: 1.6; }
   padding: 7px 10px;
   margin-bottom: 12px;
 }
+
+/* Calibration status in synthetic results */
+.sr-cal {
+  font-size: 12px;
+  color: var(--accent-700);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 7px 10px;
+  margin-bottom: 12px;
+}
+.sr-cal.sr-cal-un {
+  color: #92400E;
+  background: #FEF3C7;
+  border-color: #FCD34D;
+}

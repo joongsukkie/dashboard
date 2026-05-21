@@ -1,0 +1,90 @@
+{
+  "generated_at": "2026-05-21T06:13:21.367218Z",
+  "n_backtests": 4,
+  "results": [
+    {
+      "case": "AB_Test_Results — control vs new variant",
+      "subtype": "optimism",
+      "score": {
+        "ok": true,
+        "predicted_shares": [0.55, 0.45],
+        "true_shares": [0.528, 0.472],
+        "share_mae": 0.0221,
+        "winner_correct": true,
+        "optimism_bias": -0.0221
+      },
+      "note": "Real conversion: control 1.61% vs variant 1.44% — control won."
+    },
+    {
+      "case": "abtest1 — 3 fast-food promotions (undescribed)",
+      "subtype": "ignorance",
+      "score": {
+        "ok": true,
+        "predicted_shares": [0.29, 0.466, 0.244],
+        "true_shares": [0.361, 0.294, 0.344],
+        "share_mae": 0.1144,
+        "winner_correct": false,
+        "overconfidence": 0.0884
+      },
+      "note": "Real mean sales/promo: P1 $58.1K, P2 $47.3K, P3 $55.4K. Options are undescribed — a calibrated engine should return near-uniform shares."
+    },
+    {
+      "case": "conjoint pizza — 16 profiles",
+      "score": {
+        "ok": true,
+        "spearman": 0.538,
+        "top1_correct": false,
+        "top3_overlap": 1,
+        "predicted_order": [4, 2, 9, 0, 7, 6, 5, 12, 1, 10, 13, 14, 3, 11, 15, 8]
+      },
+      "note": "16 fully-described profiles with a known ranking."
+    },
+    {
+      "case": "choiceData — apple discrete-choice experiment",
+      "score": {
+        "ok": true,
+        "type_spearman": -0.4,
+        "freshness_spearman": 1.0,
+        "price_sign_correct": true,
+        "top_type_correct": false,
+        "top_freshness_correct": true,
+        "real_top_type": "Honeycrisp",
+        "synth_top_type": "Red Delicious",
+        "real_top_freshness": "Excellent",
+        "synth_top_freshness": "Excellent"
+      },
+      "note": "72 real choice tasks. MNL price coef -0.82; top apple by utility: Honeycrisp."
+    }
+  ],
+  "comparison": {
+    "winner_accuracy": 0.5,
+    "share_mae": 0.0683,
+    "optimism_bias": -0.0221,
+    "ignorance_overconfidence": 0.0884
+  },
+  "conjoint": {
+    "spearman": 0.538,
+    "top1_accuracy": 0.0,
+    "avg_top3_overlap": 1.0
+  },
+  "choice_conjoint": {
+    "type_spearman": -0.4,
+    "freshness_spearman": 1.0,
+    "price_sign_accuracy": 1.0,
+    "top_type_accuracy": 0.0,
+    "top_freshness_accuracy": 1.0
+  },
+  "trust": {
+    "conjoint": "medium",
+    "comparison": "high",
+    "pricing": "high"
+  },
+  "recommended_corrections": {
+    "optimism_shift": 0.0221,
+    "share_uncertainty": 0.0683
+  },
+  "notes": [
+    "Ranking-conjoint correlation with the real ranking: 0.54 (single-respondent dataset — one data point only).",
+    "Choice-conjoint (real 72-task discrete-choice experiment): the engine recovered apple-type preference at Spearman -0.40, freshness preference at 1.00, and read price direction correctly 100% of the time. Moderate — treat synthetic conjoint as directional."
+  ]
+}

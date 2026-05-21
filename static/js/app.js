@@ -943,6 +943,20 @@ function renderSyntheticResults(j) {
        ${esc(rag.retrieval||'')} retrieval)</div>`
     : "";
 
+  // Calibration status — surfaces the validated trust level from the
+  // backtests in calibration_profile.json.
+  const cal = j.calibration || {};
+  let calLine = "";
+  if (cal.status === "calibrated") {
+    calLine = `<div class="sr-cal">✓ Validated — backtested against real
+      datasets; <b>${esc(cal.validated_as||'')}</b> studies earned a
+      <b>${esc(cal.trust||'—')}</b> trust grade. Confidence above is capped
+      to that grade.</div>`;
+  } else if (cal.status === "uncalibrated") {
+    calLine = `<div class="sr-cal sr-cal-un">⚠ Engine not yet validated —
+      run calibration.py to backtest it against real datasets.</div>`;
+  }
+
   box.innerHTML = `
     <div class="sr-rec">
       <div class="sr-rec-head">Recommendation
@@ -950,6 +964,7 @@ function renderSyntheticResults(j) {
       </div>
       <div class="sr-rec-body">${esc(j.recommendation||'')}</div>
     </div>
+    ${calLine}
     ${ragLine}
     ${body}
     <details class="sr-panel-detail">

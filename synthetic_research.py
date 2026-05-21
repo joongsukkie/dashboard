@@ -137,6 +137,15 @@ def _persona_block(profile: dict, brand: str, evidence: str = "") -> str:
                             if evidence else "")
                  + ". A discount-driven segment resists full price; a "
                  "full-price segment is less moved by small discounts.")
+    # Calibration finding: the engine was fooled by flattering product NAMES
+    # (it ranked 'Red Delicious' top — real shoppers rank it last). Judge by
+    # attributes and real experience, never by how a name reads.
+    lines.append("CRITICAL: Judge every option by its concrete attributes "
+                 "and what customers actually experience — NOT by how "
+                 "appealing its NAME or LABEL sounds. Flattering words inside "
+                 "a name ('Delicious', 'Premium', 'Pro', 'Ultra', 'Deluxe') "
+                 "are marketing, not evidence of quality. A familiar product "
+                 "with a nice-sounding name is often one customers dislike.")
     return "\n".join(lines)
 
 
@@ -395,6 +404,13 @@ Options:
 {opt_block}
 
 Estimate the share of THIS segment preferring each option (must sum to ~1.0).
+
+IMPORTANT — calibration rule: if the options are NOT meaningfully
+distinguishable (e.g. bare labels like "Option 1 / 2 / 3" with no
+descriptive detail to judge), you have no basis for a preference — return
+near-EQUAL shares. Only predict a skewed split when the options give real,
+concrete differences a customer could actually react to. Do not invent a
+preference where there is no information.
 
 Return ONLY this JSON:
 {{"shares": {{{', '.join(f'"{l}": <0..1>' for l in labels)}}},
