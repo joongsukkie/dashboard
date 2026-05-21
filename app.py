@@ -2272,6 +2272,57 @@ def api_validate_study():
 # -----------------------------------------------------------------------------
 # Exports
 # -----------------------------------------------------------------------------
+def _synthetic_rows(sp: dict) -> list[tuple]:
+    """Flatten a synthetic-research result into [label, value] rows for the
+    PDF table and the Excel sheet."""
+    rows: list[tuple] = [
+        ("Study type", sp.get("study_type", "—")),
+        ("Confidence", sp.get("confidence", "—")),
+        ("Recommendation", sp.get("recommendation", "")),
+    ]
+    st = sp.get("study_type", "")
+    agg = sp.get("aggregate", {}) or {}
+    if st == "pricing":
+        rows.append(("Revenue-optimal price", f"${agg.get('optimal_price', '—')}"))
+        for c in agg.get("curve", []):
+            rows.append((f"  price ${c['price']:,.0f}",
+                         f"{c['purchase_probability']*100:.0f}% buy "
+                         f"(revenue index {c['revenue_index']:,.0f})"))
+    elif st == "comparison":
+        opts = sp.get("options", {})
+        for k, v in (agg.get("preference_share") or {}).items():
+            rows.append((f"  Option {k}: {str(opts.get(k, ''))[:50]}",
+                         f"{v*100:.0f}%"))
+        rows.append(("Winner", str(agg.get("winner", "—"))))
+    elif st == "concept":
+        rows.append(("Overall purchase intent",
+                     f"{(agg.get('overall_purchase_intent') or 0)*100:.0f}%"))
+        rows.append(("Best segment", str(agg.get("best_segment", "—"))))
+        rows.append(("Weakest segment", str(agg.get("weakest_segment", "—"))))
+    elif st == "conjoint":
+        for i, lab in enumerate(agg.get("predicted_order_labels", [])):
+            rows.append((f"  rank {i+1}", str(lab)))
+        tp = agg.get("top_profile")
+        if tp:
+            rows.append(("Top profile",
+                         ", ".join(f"{k}={v}" for k, v in tp.items())))
+    elif st == "van_westendorp":
+        rng = agg.get("acceptable_range", [0, 0])
+        rows.append(("Acceptable price range",
+                     f"${rng[0]:,.0f} – ${rng[1]:,.0f}"))
+        rows.append(("Optimal price point",
+                     f"${agg.get('optimal_price_point', '—')}"))
+        rows.append(("Indifference price point",
+                     f"${agg.get('indifference_price_point', '—')}"))
+    cal = sp.get("calibration", {}) or {}
+    if cal.get("status") == "calibrated":
+        rows.append(("Calibration trust",
+                     f"{cal.get('validated_as', '')}: {cal.get('trust', '—')}"))
+    for i, cv in enumerate(sp.get("caveats", []) or []):
+        rows.append((f"Caveat {i+1}", cv))
+    return rows
+
+
 @app.route("/api/export/excel", methods=["POST", "GET"])
 def export_excel():
     """Prefers POST body (client-supplied payload, survives server restarts);
@@ -2363,6 +2414,22 @@ def export_excel():
         ws3.cell(row=r, column=2, value=json.dumps(val) if val else "None")
         r += 1
 
+    # Synthetic Research tab (only if a study was run client-side).
+    synthetic = body.get("synthetic")
+    if synthetic and synthetic.get("ok"):
+        ws4 = wb.create_sheet("Synthetic Research")
+        ws4["A1"] = "Synthetic Research"
+        ws4["A1"].font = header_font
+        ws4["A1"].fill = header_fill
+        rr = 3
+        for label, value in _synthetic_rows(synthetic):
+            ws4.cell(row=rr, column=1, value=str(label)).font = Font(bold=True)
+            c = ws4.cell(row=rr, column=2, value=str(value))
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+            rr += 1
+        ws4.column_dimensions["A"].width = 32
+        ws4.column_dimensions["B"].width = 80
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -2389,6 +2456,7 @@ def export_pdf():
     last = body.get("last_analysis") or state.get("last_analysis")
     clean_body = body.get("clean_summary")
     filename_override = body.get("filename")
+    synthetic_payload = body.get("synthetic")
 
     if df is None or not last:
         return jsonify({"error": "No analysis data provided. Re-run the analysis first."}), 400
@@ -2530,6 +2598,28 @@ def export_pdf():
             story.append(Paragraph("Recommended Follow-up Questions", h2))
             for q in fu:
                 story.append(Paragraph(f"• {q}", body))
+
+        # Synthetic research (Phase 2-6) — included when a study was run.
+        if synthetic_payload and synthetic_payload.get("ok"):
+            story.append(PageBreak())
+            story.append(Paragraph("Synthetic Research", h2))
+            srows = _synthetic_rows(synthetic_payload)
+            data = [[str(lbl), Paragraph(str(val), body)] for lbl, val in srows]
+            t = Table(data, colWidths=[2.0 * inch, 4.8 * inch])
+            t.setStyle(TableStyle([
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E2E8F0")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1),
+                 [colors.white, colors.HexColor("#F8FAFC")]),
+            ]))
+            story.append(t)
+            story.append(Spacer(1, 0.1 * inch))
+            story.append(Paragraph(
+                "Synthetic research is a research <i>prior</i>, not a "
+                "measurement — validate with a real survey before deciding.",
+                body))
 
         def _page_num(canvas, doc_):
             canvas.saveState()

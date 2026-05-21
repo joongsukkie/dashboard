@@ -312,6 +312,8 @@
               <option value="pricing">Pricing study — purchase probability across price points</option>
               <option value="concept">Concept test — purchase intent for a new idea</option>
               <option value="comparison">Comparison — brands / products / messages</option>
+              <option value="conjoint">Conjoint — rank multi-attribute product profiles</option>
+              <option value="van_westendorp">Van Westendorp — acceptable price range (PSM)</option>
             </select>
           </div>
 
@@ -345,6 +347,24 @@
               <label class="sr-label">Options (one per line)</label>
               <textarea id="sr-options" rows="3" placeholder="Just Do It — performance&#10;Move with comfort — everyday wear"></textarea>
             </div>
+          </div>
+
+          <!-- Conjoint config -->
+          <div id="sr-cfg-conjoint" class="sr-cfg hidden">
+            <div class="sr-row">
+              <label class="sr-label">Product profiles — one per line, as <code>attribute=value</code> pairs</label>
+              <textarea id="sr-conjoint" rows="5" placeholder="brand=Nike, price=89, material=mesh, cushioning=high&#10;brand=Adidas, price=69, material=knit, cushioning=medium&#10;brand=Nike, price=119, material=leather, cushioning=high&#10;brand=Adidas, price=49, material=mesh, cushioning=low"></textarea>
+            </div>
+            <p class="muted small" style="margin-top:-4px;">Each line is one profile. Use the same attribute names on every line. 3+ profiles.</p>
+          </div>
+
+          <!-- Van Westendorp config -->
+          <div id="sr-cfg-van_westendorp" class="sr-cfg hidden">
+            <div class="sr-row">
+              <label class="sr-label">Product to price</label>
+              <input id="sr-vw-product" placeholder="e.g. a new premium running shoe" />
+            </div>
+            <p class="muted small" style="margin-top:-4px;">The panel is asked the four Van Westendorp questions; the engine returns an acceptable price range.</p>
           </div>
 
           <button id="sr-run-btn" class="btn btn-primary">Run synthetic study</button>

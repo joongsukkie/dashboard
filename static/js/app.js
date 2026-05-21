@@ -820,7 +820,7 @@ const srStudyType = $("#sr-study-type");
 if (srStudyType) {
   srStudyType.addEventListener("change", () => {
     const t = srStudyType.value;
-    ["pricing", "concept", "comparison"].forEach(k => {
+    ["pricing", "concept", "comparison", "conjoint", "van_westendorp"].forEach(k => {
       const el = $(`#sr-cfg-${k}`);
       if (el) el.classList.toggle("hidden", k !== t);
     });
@@ -867,6 +867,32 @@ async function runSyntheticStudy() {
       results.innerHTML = `<div class="sr-err">Enter at least 2 options, one per line.</div>`;
       return;
     }
+  } else if (type === "conjoint") {
+    // Each line: "attr=value, attr=value, ..." -> a profile dict.
+    const lines = ($("#sr-conjoint").value || "")
+      .split("\n").map(s => s.trim()).filter(Boolean);
+    const profiles = lines.map(line => {
+      const obj = {};
+      line.split(",").forEach(pair => {
+        const i = pair.indexOf("=");
+        if (i > 0) obj[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
+      });
+      return obj;
+    }).filter(o => Object.keys(o).length > 0);
+    if (profiles.length < 3) {
+      results.classList.remove("hidden");
+      results.innerHTML = `<div class="sr-err">Enter at least 3 product profiles, one per line, as attribute=value pairs.</div>`;
+      return;
+    }
+    config.profiles = profiles;
+    config.attributes = Object.keys(profiles[0]);
+  } else if (type === "van_westendorp") {
+    config.product = ($("#sr-vw-product").value || "").trim();
+    if (!config.product) {
+      results.classList.remove("hidden");
+      results.innerHTML = `<div class="sr-err">Enter the product to price.</div>`;
+      return;
+    }
   }
 
   btn.disabled = true;
@@ -884,6 +910,7 @@ async function runSyntheticStudy() {
       results.innerHTML = `<div class="sr-err">${esc(j.error || "Study failed")}</div>`;
       return;
     }
+    state.lastSynthetic = j;   // captured for the PDF / Excel export
     renderSyntheticResults(j);
   } catch (e) {
     results.innerHTML = `<div class="sr-err">${esc(e.message)}</div>`;
@@ -934,6 +961,39 @@ function renderSyntheticResults(j) {
         <td><div class="sr-bar"><div style="width:${(shares[k]*100).toFixed(0)}%"></div></div></td></tr>`;
     });
     body += `</tbody></table>`;
+  } else if (j.study_type === "conjoint") {
+    const a = j.aggregate || {};
+    const order = a.predicted_order_labels || [];
+    const mr = a.mean_rank || {};
+    body += `<table class="sr-table"><thead><tr><th>Rank</th><th>Profile</th><th>Mean rank</th></tr></thead><tbody>`;
+    order.forEach((lab, i) => {
+      const card = (j.per_segment && j.aggregate.top_profile) || {};
+      body += `<tr class="${i===0?'sr-opt':''}"><td>${i+1}</td>
+        <td>${esc(lab)}</td><td>${(mr[lab]!=null?mr[lab].toFixed(2):'—')}</td></tr>`;
+    });
+    body += `</tbody></table>`;
+    if (a.top_profile) {
+      body += `<div class="muted small">Top profile: ` +
+        Object.entries(a.top_profile).map(([k,v])=>`${esc(k)}=${esc(String(v))}`).join(", ") + `</div>`;
+    }
+    if (a.part_worths) {
+      body += `<details class="sr-panel-detail"><summary>Part-worths — preferred attribute levels (lower mean rank = preferred)</summary><ul>`;
+      Object.entries(a.part_worths).forEach(([attr, levels]) => {
+        const sorted = Object.entries(levels).sort((x,y)=>x[1]-y[1]);
+        body += `<li><b>${esc(attr)}:</b> ` +
+          sorted.map(([lvl,v])=>`${esc(lvl)} (${v.toFixed(2)})`).join(" › ") + `</li>`;
+      });
+      body += `</ul></details>`;
+    }
+  } else if (j.study_type === "van_westendorp") {
+    const a = j.aggregate || {};
+    const rng = a.acceptable_range || [];
+    body += `<div class="sr-bignum">$${(rng[0]||0).toLocaleString()} – $${(rng[1]||0).toLocaleString()}
+      <span>acceptable price range (Van Westendorp PSM)</span></div>`;
+    body += `<table class="sr-table"><tbody>
+      <tr><td>Optimal price point (lowest resistance)</td><td><b>$${(a.optimal_price_point||0).toLocaleString()}</b></td></tr>
+      <tr><td>Indifference price point</td><td>$${(a.indifference_price_point||0).toLocaleString()}</td></tr>
+      </tbody></table>`;
   }
 
   const rag = j.rag || {};
@@ -1111,6 +1171,7 @@ async function exportFile(kind) {
       correlation_image: corrImg,
       timeseries_image: tsImg,
     },
+    synthetic: state.lastSynthetic || null,
   };
   const url = kind === "excel" ? "/api/export/excel" : "/api/export/pdf";
   const ext = kind === "excel" ? "xlsx" : "pdf";
