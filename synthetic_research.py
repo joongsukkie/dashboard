@@ -508,7 +508,33 @@ def run_conjoint_study(config: dict, profiles: list[dict],
 
     for prof in profiles:
         ev = _seg_evidence(evidence_index, ev_query, prof["name"], openai_key)
-        prompt = _persona_block(prof, brand, ev) + f"""
+        if ev:
+            # Chain-of-thought RAG: dumping retrieved data upstream of the
+            # task does not work — the model ignores it and follows its
+            # name prior. Forcing it to FIRST extract the per-attribute
+            # order from the observed data, THEN rank consistent with that,
+            # makes it actually use the evidence.
+            task = f"""
+
+SURVEY TASK — CONJOINT RANKING (data-grounded, two steps)
+You were shown OBSERVED REAL CHOICE DATA above. It is the primary basis
+for your answer and OVERRIDES any intuition from how a product's name
+sounds ("Delicious", "Premium" etc. are marketing, not evidence).
+
+STEP 1 — From the observed data, write the preference order of every
+attribute's levels, MOST-chosen first. Compare the real pick rates
+(e.g. "8 of 40" is a lower rate than "19 of 37").
+STEP 2 — Rank the {len(cards)} profiles 1 (best) to {len(cards)} (worst),
+strictly consistent with STEP 1: a profile whose attribute levels were
+chosen MORE in the real data must rank higher. Unique ranks.
+
+{card_block}
+
+Return ONLY this JSON:
+{{"data_order": {{"<attribute>": ["level most-chosen", "...", "least"]}},
+  "ranking": {{{', '.join(f'"{l}": <1..{len(cards)}>' for l in labels)}}}}}"""
+        else:
+            task = f"""
 
 SURVEY TASK — CONJOINT RANKING
 Rank these {len(cards)} product profiles from 1 (THIS segment's most
@@ -520,6 +546,7 @@ attributes.
 
 Return ONLY this JSON:
 {{"ranking": {{{', '.join(f'"{l}": <1..{len(cards)}>' for l in labels)}}}}}"""
+        prompt = _persona_block(prof, brand, ev) + task
         try:
             resp = _ask(caller, api_key, prompt)
             raw = resp.get("ranking", {})
