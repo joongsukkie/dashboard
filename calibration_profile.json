@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-21T06:13:21.367218Z",
+  "generated_at": "2026-05-21T08:05:15.688122Z",
   "n_backtests": 4,
   "results": [
     {
@@ -7,11 +7,11 @@
       "subtype": "optimism",
       "score": {
         "ok": true,
-        "predicted_shares": [0.55, 0.45],
+        "predicted_shares": [0.5, 0.5],
         "true_shares": [0.528, 0.472],
-        "share_mae": 0.0221,
+        "share_mae": 0.0279,
         "winner_correct": true,
-        "optimism_bias": -0.0221
+        "optimism_bias": 0.0279
       },
       "note": "Real conversion: control 1.61% vs variant 1.44% — control won."
     },
@@ -20,11 +20,11 @@
       "subtype": "ignorance",
       "score": {
         "ok": true,
-        "predicted_shares": [0.29, 0.466, 0.244],
+        "predicted_shares": [0.33, 0.34, 0.33],
         "true_shares": [0.361, 0.294, 0.344],
-        "share_mae": 0.1144,
+        "share_mae": 0.0304,
         "winner_correct": false,
-        "overconfidence": 0.0884
+        "overconfidence": 0.0044
       },
       "note": "Real mean sales/promo: P1 $58.1K, P2 $47.3K, P3 $55.4K. Options are undescribed — a calibrated engine should return near-uniform shares."
     },
@@ -32,15 +32,16 @@
       "case": "conjoint pizza — 16 profiles",
       "score": {
         "ok": true,
-        "spearman": 0.538,
+        "spearman": 0.229,
         "top1_correct": false,
         "top3_overlap": 1,
-        "predicted_order": [4, 2, 9, 0, 7, 6, 5, 12, 1, 10, 13, 14, 3, 11, 15, 8]
+        "predicted_order": [4, 2, 9, 7, 12, 10, 6, 0, 14, 13, 1, 5, 3, 11, 15, 8]
       },
       "note": "16 fully-described profiles with a known ranking."
     },
     {
       "case": "choiceData — apple discrete-choice experiment",
+      "note": "72 real choice tasks. MNL price coef -0.82; top apple by utility: Honeycrisp.",
       "score": {
         "ok": true,
         "type_spearman": -0.4,
@@ -53,22 +54,51 @@
         "real_top_freshness": "Excellent",
         "synth_top_freshness": "Excellent"
       },
-      "note": "72 real choice tasks. MNL price coef -0.82; top apple by utility: Honeycrisp."
+      "score_rag": {
+        "ok": true,
+        "type_spearman": -0.1,
+        "freshness_spearman": 1.0,
+        "price_sign_correct": true,
+        "top_type_correct": false,
+        "top_freshness_correct": true,
+        "real_top_type": "Honeycrisp",
+        "synth_top_type": "Red Delicious",
+        "real_top_freshness": "Excellent",
+        "synth_top_freshness": "Excellent"
+      }
     }
   ],
+  "mnl_validation": {
+    "ok": true,
+    "dataset": "Potsdamer DCE (english)",
+    "n_tasks": 85,
+    "n_respondents": 10,
+    "n_parameters": 11,
+    "hit_rate": 0.565,
+    "mcfadden_pseudo_r2": 0.146,
+    "converged": true,
+    "note": "Independent real DCE with coded (unlabelled) attributes. Validates the harness's conditional-logit estimator — NOT the LLM engine. Hit rate >0.33 and pseudo-R2 >0 mean the estimator recovers real preference structure."
+  },
   "comparison": {
     "winner_accuracy": 0.5,
-    "share_mae": 0.0683,
-    "optimism_bias": -0.0221,
-    "ignorance_overconfidence": 0.0884
+    "share_mae": 0.0292,
+    "optimism_bias": 0.0279,
+    "ignorance_overconfidence": 0.0044
   },
   "conjoint": {
-    "spearman": 0.538,
+    "spearman": 0.229,
     "top1_accuracy": 0.0,
     "avg_top3_overlap": 1.0
   },
   "choice_conjoint": {
     "type_spearman": -0.4,
+    "freshness_spearman": 1.0,
+    "price_sign_accuracy": 1.0,
+    "top_type_accuracy": 0.0,
+    "top_freshness_accuracy": 1.0
+  },
+  "choice_conjoint_rag": {
+    "type_spearman": -0.1,
     "freshness_spearman": 1.0,
     "price_sign_accuracy": 1.0,
     "top_type_accuracy": 0.0,
@@ -80,11 +110,13 @@
     "pricing": "high"
   },
   "recommended_corrections": {
-    "optimism_shift": 0.0221,
-    "share_uncertainty": 0.0683
+    "optimism_shift": -0.0279,
+    "share_uncertainty": 0.0292
   },
   "notes": [
-    "Ranking-conjoint correlation with the real ranking: 0.54 (single-respondent dataset — one data point only).",
-    "Choice-conjoint (real 72-task discrete-choice experiment): the engine recovered apple-type preference at Spearman -0.40, freshness preference at 1.00, and read price direction correctly 100% of the time. Moderate — treat synthetic conjoint as directional."
+    "Ranking-conjoint correlation with the real ranking: 0.23 (single-respondent dataset — one data point only).",
+    "Choice-conjoint, UNGROUNDED engine (real 72-task DCE): apple-type Spearman -0.40, freshness 1.00, price direction 100%. A negative type score means the raw engine ranks product preference partly backwards — it is fooled by flattering product names.",
+    "Choice-conjoint, RAG-GROUNDED engine: apple-type Spearman -0.10 (a +0.30 swing vs ungrounded). RAG + chain-of-thought neutralised most of the name bias but did not install correct positive signal — the LLM's brand-name prior is only partly curable in-context.",
+    "Harness self-check: the conditional-logit estimator was validated on an independent real DCE (Potsdamer, 85 tasks) — hit rate 0.56 vs a 0.33 chance baseline, McFadden pseudo-R2 0.15. The harness's statistical core generalises beyond the apple data."
   ]
 }
