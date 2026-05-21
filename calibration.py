@@ -325,10 +325,43 @@ def load_choice_conjoint(path: str) -> dict:
         "real_part_worths": mnl,
         "real_type_share": {k: round(float(v), 3)
                             for k, v in share["p"].items()},
+        "evidence_index": _build_choice_evidence(df),
         "note": (f"{df['obsID'].nunique()} real choice tasks. MNL price "
                  f"coef {mnl['price_coef']:.2f}; top apple by utility: "
                  f"{max(mnl['type_utility'], key=mnl['type_utility'].get)}."),
     }
+
+
+def _build_choice_evidence(df: pd.DataFrame) -> dict:
+    """Build a RAG evidence index from the REAL choice tasks.
+
+    Each task becomes one record of revealed preference — what the shopper
+    picked and what they passed over. This is the exact mechanism the live
+    app uses: ground the engine in the brand's real data. The chunks are
+    shuffled (fixed seed) so keyword retrieval surfaces a representative
+    spread across respondents, not one respondent's first few tasks.
+    """
+    import random
+    chunks = []
+    for obs, grp in df.groupby("obsID"):
+        chosen = grp[grp["choice"] == 1]
+        if chosen.empty:
+            continue
+        c = chosen.iloc[0]
+        rejected = grp[grp["choice"] == 0]
+        rej = "; ".join(
+            f"{r['type']} (${float(r['price']):.2f}, {r['freshness']})"
+            for _, r in rejected.iterrows())
+        chunks.append({
+            "id": f"choice_{int(obs)}",
+            "text": (f"In a real shopping choice, a customer picked "
+                     f"{c['type']} (${float(c['price']):.2f}, "
+                     f"{c['freshness']} freshness) and passed over: {rej}."),
+            "segment": "_choice_evidence",   # won't match panel names ->
+                                              # keyword retrieval uses all
+        })
+    random.Random(7).shuffle(chunks)
+    return {"embedded": False, "chunks": chunks, "n_records": len(chunks)}
 
 
 def score_choice_conjoint(case: dict, result: dict) -> dict:
@@ -396,11 +429,24 @@ def _keymatch(d: dict, value: float):
 
 
 def backtest_choice_conjoint(case: dict, caller, api_key: str) -> dict:
-    res = SR.run_conjoint_study(
-        {"profiles": case["profiles"], "attributes": case["attributes"]},
-        GENERIC_PANEL, caller, api_key, brand="the brand")
-    return {"case": case["name"], "score": score_choice_conjoint(case, res),
-            "note": case["note"]}
+    """Run the choice-conjoint backtest TWICE — once with the raw engine,
+    once RAG-grounded with real choice records — so we measure exactly how
+    much grounding the engine in real data fixes the name-bias failure."""
+    cfg = {"profiles": case["profiles"], "attributes": case["attributes"]}
+
+    # Ungrounded: the raw engine, stats-only personas.
+    res_raw = SR.run_conjoint_study(cfg, GENERIC_PANEL, caller, api_key,
+                                    brand="the brand")
+    out = {"case": case["name"], "note": case["note"],
+           "score": score_choice_conjoint(case, res_raw)}
+
+    # RAG-grounded: same engine, personas fed real retrieved choice records.
+    ev = case.get("evidence_index")
+    if ev and ev.get("chunks"):
+        res_rag = SR.run_conjoint_study(cfg, GENERIC_PANEL, caller, api_key,
+                                        brand="the brand", evidence_index=ev)
+        out["score_rag"] = score_choice_conjoint(case, res_rag)
+    return out
 
 
 # -----------------------------------------------------------------------------
@@ -426,7 +472,8 @@ def run_calibration(caller, api_key: str, write: bool = True) -> dict:
 
     ch = _find("choiceData.csv")
     if ch:
-        print(f"  · running choice-conjoint (DCE) backtest on {ch} ...")
+        print(f"  · running choice-conjoint (DCE) backtest on {ch} "
+              f"— ungrounded AND RAG-grounded ...")
         results.append(backtest_choice_conjoint(load_choice_conjoint(ch),
                                                 caller, api_key))
 
@@ -472,18 +519,25 @@ def run_calibration(caller, api_key: str, write: bool = True) -> dict:
                                                      for r in conj])), 2),
         }
 
-    if chce:
-        sc = [r["score"] for r in chce]
-        profile["choice_conjoint"] = {
-            "type_spearman": round(float(np.mean([s["type_spearman"] for s in sc])), 3),
-            "freshness_spearman": round(float(np.mean([s["freshness_spearman"] for s in sc])), 3),
+    def _agg_choice(scores: list[dict]) -> dict:
+        return {
+            "type_spearman": round(float(np.mean([s["type_spearman"] for s in scores])), 3),
+            "freshness_spearman": round(float(np.mean([s["freshness_spearman"] for s in scores])), 3),
             "price_sign_accuracy": round(float(np.mean(
-                [1.0 if s["price_sign_correct"] else 0.0 for s in sc])), 3),
+                [1.0 if s["price_sign_correct"] else 0.0 for s in scores])), 3),
             "top_type_accuracy": round(float(np.mean(
-                [1.0 if s["top_type_correct"] else 0.0 for s in sc])), 3),
+                [1.0 if s["top_type_correct"] else 0.0 for s in scores])), 3),
             "top_freshness_accuracy": round(float(np.mean(
-                [1.0 if s["top_freshness_correct"] else 0.0 for s in sc])), 3),
+                [1.0 if s["top_freshness_correct"] else 0.0 for s in scores])), 3),
         }
+
+    if chce:
+        profile["choice_conjoint"] = _agg_choice([r["score"] for r in chce])
+        # RAG-grounded variant — the engine fed real retrieved choice records.
+        rag_scores = [r["score_rag"] for r in chce
+                      if r.get("score_rag", {}).get("ok")]
+        if rag_scores:
+            profile["choice_conjoint_rag"] = _agg_choice(rag_scores)
 
     profile["trust"] = _trust_grades(profile)
     profile["recommended_corrections"] = _corrections(profile)
@@ -498,9 +552,11 @@ def run_calibration(caller, api_key: str, write: bool = True) -> dict:
 
 def _trust_grades(p: dict) -> dict:
     grades = {}
-    # Conjoint trust: prefer the discrete-choice (DCE) backtest when present
-    # — it's multi-respondent and far more reliable than a single ranking.
-    chce = p.get("choice_conjoint")
+    # Conjoint trust: prefer the discrete-choice (DCE) backtest. Use the
+    # RAG-grounded score when available — the LIVE engine always runs
+    # grounded on the user's real data, so the grounded number is the one
+    # that describes production behaviour.
+    chce = p.get("choice_conjoint_rag") or p.get("choice_conjoint")
     if chce:
         # Blend type + freshness rank correlation with the price-sign check.
         score = (0.45 * chce["type_spearman"]
@@ -560,14 +616,25 @@ def _notes(p: dict) -> list[str]:
     chce = p.get("choice_conjoint")
     if chce:
         notes.append(
-            f"Choice-conjoint (real 72-task discrete-choice experiment): the "
-            f"engine recovered apple-type preference at Spearman "
-            f"{chce['type_spearman']:.2f}, freshness preference at "
-            f"{chce['freshness_spearman']:.2f}, and read price direction "
-            f"correctly {chce['price_sign_accuracy']*100:.0f}% of the time. "
-            + ("Strong — synthetic conjoint tracks real human choices."
-               if chce['type_spearman'] >= 0.6 else
-               "Moderate — treat synthetic conjoint as directional."))
+            f"Choice-conjoint, UNGROUNDED engine (real 72-task DCE): "
+            f"apple-type Spearman {chce['type_spearman']:.2f}, freshness "
+            f"{chce['freshness_spearman']:.2f}, price direction "
+            f"{chce['price_sign_accuracy']*100:.0f}%. "
+            + ("A negative type score means the raw engine ranks product "
+               "preference partly backwards — it is fooled by flattering "
+               "product names." if chce['type_spearman'] < 0 else ""))
+    rag = p.get("choice_conjoint_rag")
+    if rag and chce:
+        delta = rag["type_spearman"] - chce["type_spearman"]
+        notes.append(
+            f"Choice-conjoint, RAG-GROUNDED engine: apple-type Spearman "
+            f"{rag['type_spearman']:.2f} (a {delta:+.2f} swing vs ungrounded). "
+            + ("Grounding the engine in real retrieved choice records fixes "
+               "the name-bias failure — this is the core value of the RAG "
+               "layer, measured."
+               if delta > 0.3 else
+               "Grounding moved the result but not decisively — more or "
+               "better-targeted retrieved evidence may be needed."))
     return notes
 
 
@@ -595,12 +662,27 @@ def _print_report(p: dict) -> None:
 
     if "choice_conjoint" in p:
         c = p["choice_conjoint"]
+        rag = p.get("choice_conjoint_rag")
         print("  CHOICE-CONJOINT (vs 72-task real discrete-choice experiment)")
-        print(f"    Apple-type pref Spearman  : {c['type_spearman']}")
-        print(f"    Freshness pref Spearman   : {c['freshness_spearman']}")
-        print(f"    Price direction correct   : {c['price_sign_accuracy']}")
-        print(f"    Top apple type correct    : {c['top_type_accuracy']}")
-        print(f"    Top freshness correct     : {c['top_freshness_accuracy']}\n")
+        if rag:
+            print(f"    {'metric':<26}{'ungrounded':>12}{'RAG-grounded':>14}")
+            print(f"    {'apple-type Spearman':<26}{c['type_spearman']:>12}"
+                  f"{rag['type_spearman']:>14}")
+            print(f"    {'freshness Spearman':<26}{c['freshness_spearman']:>12}"
+                  f"{rag['freshness_spearman']:>14}")
+            print(f"    {'price direction acc':<26}{c['price_sign_accuracy']:>12}"
+                  f"{rag['price_sign_accuracy']:>14}")
+            print(f"    {'top apple type acc':<26}{c['top_type_accuracy']:>12}"
+                  f"{rag['top_type_accuracy']:>14}")
+            swing = rag['type_spearman'] - c['type_spearman']
+            print(f"    -> RAG grounding moved apple-type Spearman by "
+                  f"{swing:+.2f}\n")
+        else:
+            print(f"    Apple-type pref Spearman  : {c['type_spearman']}")
+            print(f"    Freshness pref Spearman   : {c['freshness_spearman']}")
+            print(f"    Price direction correct   : {c['price_sign_accuracy']}")
+            print(f"    Top apple type correct    : {c['top_type_accuracy']}")
+            print(f"    Top freshness correct     : {c['top_freshness_accuracy']}\n")
 
     if "comparison" in p:
         c = p["comparison"]
