@@ -957,6 +957,39 @@ function renderSyntheticResults(j) {
       run calibration.py to backtest it against real datasets.</div>`;
   }
 
+  // Phase 6 — human-in-the-loop validation. Available for proportion-type
+  // studies (comparison winner share, concept purchase intent).
+  let validatePanel = "";
+  let focalShare = null, focalLabel = "";
+  if (j.study_type === "comparison" && j.aggregate?.preference_share) {
+    const win = j.aggregate.winner;
+    focalShare = j.aggregate.preference_share[win];
+    focalLabel = (j.options && j.options[win]) || ("Option " + win);
+  } else if (j.study_type === "concept") {
+    focalShare = j.aggregate?.overall_purchase_intent;
+    focalLabel = "would buy the concept";
+  }
+  if (focalShare != null) {
+    validatePanel = `
+      <details class="sr-validate" data-share="${focalShare}" data-label="${esc(focalLabel)}">
+        <summary>🔬 Validate this with a real survey (Bayesian update)</summary>
+        <p class="muted small">Ran a small real survey on the same question?
+          Enter it — the synthetic estimate becomes a <em>prior</em>, your
+          survey is the <em>data</em>, and a Bayesian update gives a corrected
+          estimate with a real confidence interval.</p>
+        <div class="sr-row">
+          <label class="sr-label">People surveyed (n)</label>
+          <input type="number" class="sv-n" min="1" placeholder="e.g. 30" />
+        </div>
+        <div class="sr-row">
+          <label class="sr-label">How many chose "${esc(focalLabel)}" (k)</label>
+          <input type="number" class="sv-k" min="0" placeholder="e.g. 18" />
+        </div>
+        <button class="btn btn-primary sv-run">Combine prior + survey</button>
+        <div class="sv-result"></div>
+      </details>`;
+  }
+
   box.innerHTML = `
     <div class="sr-rec">
       <div class="sr-rec-head">Recommendation
@@ -973,10 +1006,62 @@ function renderSyntheticResults(j) {
         `<li><b>${esc(p.segment)}</b> <span class="muted small">(${(p.weight*100).toFixed(0)}% · ${p.n_rows.toLocaleString()} real purchases)</span><br>
          <span class="muted small">${esc(p.description||'')}</span></li>`).join("")}</ul>
     </details>
+    ${validatePanel}
     <div class="sr-caveats">
       <b>Caveats — read before deciding:</b>
       <ul>${(j.caveats||[]).map(c => `<li>${esc(c)}</li>`).join("")}</ul>
     </div>`;
+
+  // Wire the validation panel.
+  const vp = box.querySelector(".sr-validate");
+  if (vp) {
+    vp.querySelector(".sv-run").addEventListener("click", () => runValidation(vp));
+  }
+}
+
+async function runValidation(panel) {
+  const out = panel.querySelector(".sv-result");
+  const n = parseInt(panel.querySelector(".sv-n").value, 10);
+  const k = parseInt(panel.querySelector(".sv-k").value, 10);
+  const share = parseFloat(panel.dataset.share);
+  const label = panel.dataset.label;
+
+  if (isNaN(n) || n < 1 || isNaN(k) || k < 0 || k > n) {
+    out.innerHTML = `<div class="sr-err">Enter a valid n and k (0 ≤ k ≤ n).</div>`;
+    return;
+  }
+  out.innerHTML = `<div class="muted small">Combining…</div>`;
+  try {
+    const r = await fetch("/api/validate_study", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({synthetic_share: share, focal_label: label,
+                            n: n, chose_focal: k}),
+    });
+    const v = await r.json().catch(() => ({}));
+    if (!r.ok || !v.ok) {
+      out.innerHTML = `<div class="sr-err">${esc(v.error || "Validation failed")}</div>`;
+      return;
+    }
+    const pct = x => (x * 100).toFixed(0) + "%";
+    const vClass = v.verdict === "consistent" ? "conf-high"
+                 : v.verdict === "minor disagreement" ? "conf-mid" : "conf-low";
+    out.innerHTML = `
+      <table class="sv-table">
+        <tr><td>Synthetic prior</td><td>${pct(v.prior.estimate)}</td>
+            <td class="muted small">±${pct(1.96*v.prior.sd)}</td></tr>
+        <tr><td>Your real survey</td><td>${v.survey.chose_focal}/${v.survey.n} = ${pct(v.survey.estimate)}</td>
+            <td class="muted small">±${pct(1.96*v.survey.se)}</td></tr>
+        <tr class="sv-post"><td><b>Combined (posterior)</b></td>
+            <td><b>${pct(v.posterior.estimate)}</b></td>
+            <td class="muted small">95% CI ${pct(v.posterior.ci95[0])}–${pct(v.posterior.ci95[1])}</td></tr>
+      </table>
+      <div class="sv-verdict ${vClass}">${esc(v.verdict)}</div>
+      <div class="muted small" style="margin-top:6px;">${esc(v.interpretation)}</div>
+      <div class="muted small" style="margin-top:4px;">${esc(v.recommendation)}</div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="sr-err">${esc(e.message)}</div>`;
+  }
 }
 
 // ---------------------------------------------------------------------------

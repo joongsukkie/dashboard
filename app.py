@@ -56,6 +56,7 @@ import playbooks as playbook_mod
 import personas as personas_mod
 import synthetic_research as sr_mod
 import evidence as evidence_mod
+import validation as validation_mod
 
 
 # -----------------------------------------------------------------------------
@@ -2194,6 +2195,78 @@ def api_synthetic_research():
     except Exception as e:
         log.error(f"Synthetic research failed: {e}\n{traceback.format_exc()}")
         return jsonify({"error": f"Synthetic research failed: {str(e)[:200]}"}), 500
+
+
+@app.route("/api/validate_study", methods=["POST"])
+def api_validate_study():
+    """Phase 6 — human-in-the-loop validation.
+
+    Fuse a synthetic estimate (prior) with a small real survey (data) via
+    a conjugate Bayesian update. Accepts either:
+      JSON     {synthetic_share, focal_label, n, chose_focal}
+      multipart file=<survey CSV> + synthetic_share + focal_label
+               + focal_value (the value to count in the CSV)
+    """
+    body = request.get_json(silent=True) or {}
+
+    def _num(*keys, default=None):
+        for src in (body, request.form):
+            for k in keys:
+                if k in src:
+                    try:
+                        return float(src[k])
+                    except (TypeError, ValueError):
+                        pass
+        return default
+
+    synthetic_share = _num("synthetic_share")
+    if synthetic_share is None:
+        return jsonify({"error": "Missing synthetic_share (the prior estimate)."}), 400
+    focal_label = (body.get("focal_label") or request.form.get("focal_label")
+                   or "the option")
+
+    # Real survey: either a CSV upload, or n + chose_focal numbers.
+    n = k = None
+    if "file" in request.files:
+        try:
+            raw = request.files["file"].read()
+            df = None
+            for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+                try:
+                    df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            focal_value = (request.form.get("focal_value") or focal_label)
+            k, n = validation_mod.proportion_from_survey(df, focal_value)
+            if n == 0:
+                return jsonify({"error": "Could not find the focal value in "
+                                "the survey CSV. Check the column / value."}), 400
+        except Exception as e:
+            return jsonify({"error": f"Could not read survey CSV: {str(e)[:160]}"}), 400
+    else:
+        n = _num("n", "n_surveyed", "total")
+        k = _num("chose_focal", "k", "chose")
+        if n is None or k is None:
+            return jsonify({"error": "Provide a survey CSV, or n (people "
+                            "surveyed) and chose_focal (how many picked the "
+                            "focal option)."}), 400
+
+    # Prior width comes from the calibration harness.
+    prof = _load_calibration_profile()
+    cal_mae = None
+    if prof:
+        cal_mae = (prof.get("comparison") or {}).get("share_mae")
+
+    try:
+        result = validation_mod.validate_proportion(
+            synthetic_share, int(k), int(n),
+            calibration_mae=cal_mae, focal_label=focal_label)
+        status = 200 if result.get("ok") else 400
+        return jsonify(result), status
+    except Exception as e:
+        log.error(f"Validation failed: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": f"Validation failed: {str(e)[:200]}"}), 500
 
 
 # -----------------------------------------------------------------------------

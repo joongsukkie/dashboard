@@ -1115,3 +1115,47 @@ textarea { resize: vertical; line-height: 1.6; }
   background: #FEF3C7;
   border-color: #FCD34D;
 }
+
+/* Phase 6 — human-in-the-loop validation panel */
+.sr-validate {
+  margin: 12px 0;
+  padding: 10px 12px;
+  background: #FAFCFA;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.sr-validate summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent-700);
+}
+.sv-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 13px;
+}
+.sv-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #E2E8F0;
+}
+.sv-table tr.sv-post td {
+  background: var(--accent-soft);
+  border-bottom: none;
+}
+.sv-verdict {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #FFF;
+}
+.sv-verdict.conf-high { color: #15803D; border: 1px solid #15803D; }
+.sv-verdict.conf-mid  { color: #B45309; border: 1px solid #B45309; }
+.sv-verdict.conf-low  { color: #B91C1C; border: 1px solid #B91C1C; }
+.sv-result { margin-top: 8px; }
