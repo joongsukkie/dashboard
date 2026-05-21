@@ -333,34 +333,53 @@ def load_choice_conjoint(path: str) -> dict:
 
 
 def _build_choice_evidence(df: pd.DataFrame) -> dict:
-    """Build a RAG evidence index from the REAL choice tasks.
+    """Build the RAG evidence index for the choice-conjoint backtest.
 
-    Each task becomes one record of revealed preference — what the shopper
-    picked and what they passed over. This is the exact mechanism the live
-    app uses: ground the engine in the brand's real data. The chunks are
-    shuffled (fixed seed) so keyword retrieval surfaces a representative
-    spread across respondents, not one respondent's first few tasks.
+    LESSON FROM THE FIRST RAG RUN: feeding raw individual choice records
+    made the engine WORSE (type_spearman -0.3 -> -0.7) and broke price
+    reading. Individual choices confound the attributes — an apple is
+    picked partly for its freshness/price, not just its type — so a few
+    raw rows mislead. The right retrieval granularity for an attribute-
+    preference question is the ANALYSED real behaviour: how often each
+    attribute level was actually chosen across all 72 tasks.
+
+    Note this is still honestly non-circular: the engine is scored against
+    the MNL part-worths, which DECONFOUND the attributes; these marginal
+    choice rates do not. The engine must still integrate three attributes
+    across 15 multi-attribute profiles.
     """
-    import random
     chunks = []
-    for obs, grp in df.groupby("obsID"):
-        chosen = grp[grp["choice"] == 1]
-        if chosen.empty:
-            continue
-        c = chosen.iloc[0]
-        rejected = grp[grp["choice"] == 0]
-        rej = "; ".join(
-            f"{r['type']} (${float(r['price']):.2f}, {r['freshness']})"
-            for _, r in rejected.iterrows())
-        chunks.append({
-            "id": f"choice_{int(obs)}",
-            "text": (f"In a real shopping choice, a customer picked "
-                     f"{c['type']} (${float(c['price']):.2f}, "
-                     f"{c['freshness']} freshness) and passed over: {rej}."),
-            "segment": "_choice_evidence",   # won't match panel names ->
-                                              # keyword retrieval uses all
-        })
-    random.Random(7).shuffle(chunks)
+
+    # Per apple-type: chosen / offered counts (counts, not a ranking — the
+    # engine has to compute and order the rates itself).
+    t = df.assign(_a=1).groupby("type").agg(
+        chosen=("choice", "sum"), offered=("_a", "sum"))
+    type_txt = "; ".join(
+        f"{idx}: chosen {int(r['chosen'])} of {int(r['offered'])} times offered"
+        for idx, r in t.iterrows())
+    chunks.append({"id": "ev_type", "segment": "_ev",
+                   "text": ("Observed in this brand's real customer choice "
+                            f"data — apple type pick rates: {type_txt}.")})
+
+    # Per freshness level.
+    f = df.assign(_a=1).groupby("freshness").agg(
+        chosen=("choice", "sum"), offered=("_a", "sum"))
+    fr_txt = "; ".join(
+        f"{idx}: chosen {int(r['chosen'])} of {int(r['offered'])}"
+        for idx, r in f.iterrows())
+    chunks.append({"id": "ev_fresh", "segment": "_ev",
+                   "text": ("Observed real behaviour — freshness pick "
+                            f"rates: {fr_txt}.")})
+
+    # Price: average price of chosen vs passed-over items.
+    pc = float(df[df["choice"] == 1]["price"].mean())
+    pn = float(df[df["choice"] == 0]["price"].mean())
+    chunks.append({"id": "ev_price", "segment": "_ev",
+                   "text": ("Observed real behaviour — price: items "
+                            f"customers chose averaged ${pc:.2f}; items they "
+                            f"passed over averaged ${pn:.2f}. Customers chose "
+                            "cheaper options more often.")})
+
     return {"embedded": False, "chunks": chunks, "n_records": len(chunks)}
 
 
