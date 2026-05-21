@@ -55,6 +55,7 @@ import playbooks as playbook_mod
 # Synthetic Research — persona-grounded synthetic market surveys
 import personas as personas_mod
 import synthetic_research as sr_mod
+import evidence as evidence_mod
 
 
 # -----------------------------------------------------------------------------
@@ -1545,6 +1546,8 @@ def api_analyze():
         df, clean_summary = clean_dataframe(state["original_df"].copy())
         state["cleaned_df"] = df
         state["clean_summary"] = clean_summary
+        # New dataset — drop any cached RAG evidence index from a prior run.
+        state.pop("evidence_index", None)
 
         # 2. Profile
         profile = profile_dataframe(df)
@@ -2151,9 +2154,29 @@ def api_synthetic_research():
                   "gemini": call_gemini}[provider]
         brand = _brand_from_filename(state.get("filename"))
 
+        # RAG evidence layer: index the real dataset rows so each persona's
+        # prompt can be grounded in retrieved real records. Built once and
+        # cached in the session. Uses OpenAI embeddings when a key is
+        # available; otherwise keyword retrieval.
+        openai_key = (body.get("openai_key") or state.get("openai_key")
+                      or (api_key if provider == "openai" else None))
+        ev_index = state.get("evidence_index")
+        if ev_index is None:
+            seg_col, seg_lab = personas_mod.segment_labels(df, roles)
+            ev_index = evidence_mod.build_evidence_index(
+                df, roles, seg_col, seg_lab, openai_key=openai_key)
+            state["evidence_index"] = ev_index
+
         result = sr_mod.run_study(study_type, config, profiles, demand,
-                                  caller, api_key, brand)
+                                  caller, api_key, brand,
+                                  evidence_index=ev_index, openai_key=openai_key)
         result = _attach_calibration(result, study_type)
+        result["rag"] = {
+            "grounded": bool(ev_index and ev_index.get("chunks")),
+            "n_records_indexed": ev_index.get("n_records", 0) if ev_index else 0,
+            "retrieval": ("semantic embeddings" if ev_index
+                          and ev_index.get("embedded") else "keyword"),
+        }
         result["segmentation_column"] = prof.get("segmentation_column")
         result["panel"] = [
             {"segment": p["name"], "weight": p.get("weight"),

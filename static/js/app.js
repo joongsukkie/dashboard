@@ -936,6 +936,13 @@ function renderSyntheticResults(j) {
     body += `</tbody></table>`;
   }
 
+  const rag = j.rag || {};
+  const ragLine = rag.grounded
+    ? `<div class="sr-rag">🔎 RAG-grounded — each persona prompt was fed real
+       retrieved records (${(rag.n_records_indexed||0).toLocaleString()} indexed,
+       ${esc(rag.retrieval||'')} retrieval)</div>`
+    : "";
+
   box.innerHTML = `
     <div class="sr-rec">
       <div class="sr-rec-head">Recommendation
@@ -943,6 +950,7 @@ function renderSyntheticResults(j) {
       </div>
       <div class="sr-rec-body">${esc(j.recommendation||'')}</div>
     </div>
+    ${ragLine}
     ${body}
     <details class="sr-panel-detail">
       <summary>Synthetic panel — ${(j.panel||[]).length} digital-twin segment(s)</summary>

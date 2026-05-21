@@ -284,6 +284,16 @@ def _describe(p: SegmentProfile) -> str:
 # -----------------------------------------------------------------------------
 # Public API — build the persona set
 # -----------------------------------------------------------------------------
+def segment_labels(df: pd.DataFrame, roles: dict) -> tuple[str | None, pd.Series | None]:
+    """Return the segmentation column and a per-row label Series, using the
+    SAME column build_segment_profiles cuts on. Lets the RAG evidence layer
+    tag each record with the segment its persona will represent."""
+    col = _choose_segmentation_column(df, roles)
+    if col is None:
+        return None, None
+    return col, df[col].astype(str)
+
+
 def build_segment_profiles(df: pd.DataFrame, roles: dict,
                            playbook: dict | None = None,
                            max_segments: int = 6) -> dict:
