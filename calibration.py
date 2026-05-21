@@ -234,6 +234,176 @@ def backtest_conjoint(case: dict, caller, api_key: str) -> dict:
 
 
 # -----------------------------------------------------------------------------
+# Choice-based conjoint (discrete choice experiment) — the strongest anchor
+# -----------------------------------------------------------------------------
+def _estimate_mnl(df: pd.DataFrame) -> dict:
+    """Conditional (multinomial) logit on a discrete-choice dataset — the
+    textbook way to recover part-worth utilities from real human choices.
+
+    Expects columns: obsID, choice (0/1), price, type, freshness.
+    Reference levels: first apple type, freshness 'Poor'. Utilities are
+    relative to those. A negative price coefficient is the expected sign.
+    """
+    from scipy.optimize import minimize
+
+    types = sorted(df["type"].dropna().astype(str).unique())
+    type_cols = types[1:]                       # ref = types[0]
+    fresh_cols = ["Average", "Excellent"]       # ref = Poor
+
+    def feat(row):
+        f = [float(row["price"])]
+        f += [1.0 if str(row["type"]) == t else 0.0 for t in type_cols]
+        f += [1.0 if str(row["freshness"]) == fr else 0.0 for fr in fresh_cols]
+        return f
+
+    X = np.array([feat(r) for _, r in df.iterrows()], dtype=float)
+    y = df["choice"].astype(float).values
+    groups = df["obsID"].values
+    uniq = np.unique(groups)
+
+    def nll(beta):
+        u = X @ beta
+        tot = 0.0
+        for g in uniq:
+            m = groups == g
+            ug = u[m] - u[m].max()
+            p = np.exp(ug)
+            p = p / p.sum()
+            tot -= np.log(p[int(np.argmax(y[m]))] + 1e-12)
+        return tot
+
+    res = minimize(nll, np.zeros(X.shape[1]), method="BFGS")
+    b = res.x
+    type_util = {types[0]: 0.0}
+    for i, t in enumerate(type_cols):
+        type_util[t] = float(b[1 + i])
+    fresh_util = {"Poor": 0.0}
+    for i, fr in enumerate(fresh_cols):
+        fresh_util[fr] = float(b[1 + len(type_cols) + i])
+    return {
+        "price_coef": float(b[0]),
+        "type_utility": type_util,
+        "freshness_utility": fresh_util,
+        "converged": bool(res.success),
+    }
+
+
+def load_choice_conjoint(path: str) -> dict:
+    """A discrete-choice experiment. Estimates real part-worths via MNL and
+    builds a balanced 15-profile set for the synthetic engine to rank."""
+    df = pd.read_csv(path)
+    df.columns = [c.strip() for c in df.columns]
+    df = df[["obsID", "choice", "price", "type", "freshness"]].dropna()
+    df["price"] = pd.to_numeric(df["price"], errors="coerce")
+    df = df.dropna(subset=["price"])
+
+    mnl = _estimate_mnl(df)
+    types = sorted(df["type"].astype(str).unique())
+    fresh = ["Poor", "Average", "Excellent"]
+
+    # Balanced fractional factorial. Price is assigned by a Latin-square
+    # rule price_cycle[(i + j) % 3] so it varies INDEPENDENTLY of both type
+    # and freshness — otherwise price and freshness would be collinear and
+    # the part-worths uninterpretable.
+    price_cycle = [1.5, 2.5, 3.5]
+    profiles = []
+    for i, t in enumerate(types):
+        for j, fr in enumerate(fresh):
+            profiles.append({"type": t, "price": price_cycle[(i + j) % 3],
+                             "freshness": fr})
+
+    # Real aggregate choice share per type (a simple cross-check of the MNL).
+    share = df.assign(_a=1).groupby("type").agg(
+        chosen=("choice", "sum"), avail=("_a", "sum"))
+    share["p"] = share["chosen"] / share["avail"]
+
+    return {
+        "name": "choiceData — apple discrete-choice experiment",
+        "type": "choice_conjoint",
+        "profiles": profiles,
+        "attributes": ["type", "price", "freshness"],
+        "real_part_worths": mnl,
+        "real_type_share": {k: round(float(v), 3)
+                            for k, v in share["p"].items()},
+        "note": (f"{df['obsID'].nunique()} real choice tasks. MNL price "
+                 f"coef {mnl['price_coef']:.2f}; top apple by utility: "
+                 f"{max(mnl['type_utility'], key=mnl['type_utility'].get)}."),
+    }
+
+
+def score_choice_conjoint(case: dict, result: dict) -> dict:
+    """Compare the synthetic engine's recovered preferences to the real
+    MNL part-worths."""
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error")}
+    pw = result["aggregate"]["part_worths"]            # {attr: {level: mean_rank}}
+    real = case["real_part_worths"]
+
+    # Synthetic preference = -mean_rank (lower rank = more preferred).
+    def synth_pref(attr):
+        return {lvl: -v for lvl, v in pw.get(attr, {}).items()}
+
+    # Type ordering correlation.
+    s_type = synth_pref("type")
+    r_type = real["type_utility"]
+    common = [t for t in r_type if t in s_type]
+    type_spear = _spearman([r_type[t] for t in common],
+                           [s_type[t] for t in common]) if len(common) >= 3 else 0.0
+
+    # Freshness ordering correlation.
+    s_fr = synth_pref("freshness")
+    r_fr = real["freshness_utility"]
+    fr_common = [f for f in r_fr if f in s_fr]
+    fr_spear = _spearman([r_fr[f] for f in fr_common],
+                         [s_fr[f] for f in fr_common]) if len(fr_common) >= 3 else 0.0
+
+    # Price: synthetic should prefer the lower price (mean_rank rises with price).
+    price_pw = pw.get("price", {})
+    price_sign_correct = False
+    if len(price_pw) >= 2:
+        prices = sorted(float(p) for p in price_pw)
+        ranks = [price_pw[_keymatch(price_pw, p)] for p in prices]
+        price_sign_correct = ranks[0] < ranks[-1]   # cheaper = better rank
+
+    real_top_type = max(r_type, key=r_type.get)
+    synth_top_type = min(pw.get("type", {}), key=pw.get("type", {}).get) \
+        if pw.get("type") else None
+    real_top_fr = max(r_fr, key=r_fr.get)
+    synth_top_fr = min(pw.get("freshness", {}), key=pw.get("freshness", {}).get) \
+        if pw.get("freshness") else None
+
+    return {
+        "ok": True,
+        "type_spearman": round(type_spear, 3),
+        "freshness_spearman": round(fr_spear, 3),
+        "price_sign_correct": bool(price_sign_correct),
+        "top_type_correct": real_top_type == synth_top_type,
+        "top_freshness_correct": real_top_fr == synth_top_fr,
+        "real_top_type": real_top_type, "synth_top_type": synth_top_type,
+        "real_top_freshness": real_top_fr, "synth_top_freshness": synth_top_fr,
+    }
+
+
+def _keymatch(d: dict, value: float):
+    """Find the dict key (possibly a string) that equals a numeric value."""
+    for k in d:
+        try:
+            if abs(float(k) - value) < 1e-9:
+                return k
+        except (TypeError, ValueError):
+            pass
+    return list(d)[0]
+
+
+def backtest_choice_conjoint(case: dict, caller, api_key: str) -> dict:
+    res = SR.run_conjoint_study(
+        {"profiles": case["profiles"], "attributes": case["attributes"]},
+        GENERIC_PANEL, caller, api_key, brand="the brand")
+    return {"case": case["name"], "score": score_choice_conjoint(case, res),
+            "note": case["note"]}
+
+
+# -----------------------------------------------------------------------------
 # Calibration suite
 # -----------------------------------------------------------------------------
 def run_calibration(caller, api_key: str, write: bool = True) -> dict:
@@ -254,11 +424,19 @@ def run_calibration(caller, api_key: str, write: bool = True) -> dict:
         print(f"  · running conjoint backtest on {cj} ...")
         results.append(backtest_conjoint(load_conjoint(cj), caller, api_key))
 
+    ch = _find("choiceData.csv")
+    if ch:
+        print(f"  · running choice-conjoint (DCE) backtest on {ch} ...")
+        results.append(backtest_choice_conjoint(load_choice_conjoint(ch),
+                                                caller, api_key))
+
     # Aggregate into a calibration profile.
     comp = [r for r in results if r["score"].get("ok")
             and "share_mae" in r["score"]]
     conj = [r for r in results if r["score"].get("ok")
             and "spearman" in r["score"]]
+    chce = [r for r in results if r["score"].get("ok")
+            and "type_spearman" in r["score"]]
 
     profile: dict = {
         "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -294,6 +472,19 @@ def run_calibration(caller, api_key: str, write: bool = True) -> dict:
                                                      for r in conj])), 2),
         }
 
+    if chce:
+        sc = [r["score"] for r in chce]
+        profile["choice_conjoint"] = {
+            "type_spearman": round(float(np.mean([s["type_spearman"] for s in sc])), 3),
+            "freshness_spearman": round(float(np.mean([s["freshness_spearman"] for s in sc])), 3),
+            "price_sign_accuracy": round(float(np.mean(
+                [1.0 if s["price_sign_correct"] else 0.0 for s in sc])), 3),
+            "top_type_accuracy": round(float(np.mean(
+                [1.0 if s["top_type_correct"] else 0.0 for s in sc])), 3),
+            "top_freshness_accuracy": round(float(np.mean(
+                [1.0 if s["top_freshness_correct"] else 0.0 for s in sc])), 3),
+        }
+
     profile["trust"] = _trust_grades(profile)
     profile["recommended_corrections"] = _corrections(profile)
     profile["notes"] = _notes(profile)
@@ -307,16 +498,31 @@ def run_calibration(caller, api_key: str, write: bool = True) -> dict:
 
 def _trust_grades(p: dict) -> dict:
     grades = {}
-    c = p.get("conjoint", {})
-    s = c.get("spearman")
-    grades["conjoint"] = ("high" if s and s >= 0.6 else
-                          "medium" if s and s >= 0.3 else "low")
+    # Conjoint trust: prefer the discrete-choice (DCE) backtest when present
+    # — it's multi-respondent and far more reliable than a single ranking.
+    chce = p.get("choice_conjoint")
+    if chce:
+        # Blend type + freshness rank correlation with the price-sign check.
+        score = (0.45 * chce["type_spearman"]
+                 + 0.30 * chce["freshness_spearman"]
+                 + 0.25 * chce["price_sign_accuracy"])
+        grades["conjoint"] = ("high" if score >= 0.6 else
+                              "medium" if score >= 0.3 else "low")
+    else:
+        s = p.get("conjoint", {}).get("spearman")
+        grades["conjoint"] = ("high" if s and s >= 0.6 else
+                              "medium" if s and s >= 0.3 else "low")
     comp = p.get("comparison", {})
     bias = abs(comp.get("optimism_bias", 1.0))
     grades["comparison"] = ("high" if bias <= 0.10 else
                             "medium" if bias <= 0.25 else "low")
-    # Pricing has no direct backtest yet — inherit conjoint as a proxy.
-    grades["pricing"] = grades["conjoint"]
+    # Pricing is validated by the choice-conjoint's price-sign accuracy when
+    # available (it directly tests whether the engine reads price correctly).
+    if chce:
+        grades["pricing"] = ("high" if chce["price_sign_accuracy"] >= 0.99 else
+                             "medium" if chce["price_sign_accuracy"] >= 0.5 else "low")
+    else:
+        grades["pricing"] = grades["conjoint"]
     return grades
 
 
@@ -348,11 +554,20 @@ def _notes(p: dict) -> list[str]:
                      f"options are vague.")
     conj = p.get("conjoint", {})
     if conj.get("spearman") is not None:
-        notes.append(f"Conjoint rank correlation with real preferences: "
-                     f"{conj['spearman']:.2f}. "
-                     + ("Strong — the engine recovers real preference order."
-                        if conj["spearman"] >= 0.6 else
-                        "Moderate/weak — treat conjoint output as directional only."))
+        notes.append(f"Ranking-conjoint correlation with the real ranking: "
+                     f"{conj['spearman']:.2f} (single-respondent dataset — "
+                     f"one data point only).")
+    chce = p.get("choice_conjoint")
+    if chce:
+        notes.append(
+            f"Choice-conjoint (real 72-task discrete-choice experiment): the "
+            f"engine recovered apple-type preference at Spearman "
+            f"{chce['type_spearman']:.2f}, freshness preference at "
+            f"{chce['freshness_spearman']:.2f}, and read price direction "
+            f"correctly {chce['price_sign_accuracy']*100:.0f}% of the time. "
+            + ("Strong — synthetic conjoint tracks real human choices."
+               if chce['type_spearman'] >= 0.6 else
+               "Moderate — treat synthetic conjoint as directional."))
     return notes
 
 
@@ -373,10 +588,19 @@ def _print_report(p: dict) -> None:
 
     if "conjoint" in p:
         c = p["conjoint"]
-        print("  CONJOINT (predictive accuracy vs known ranking)")
+        print("  RANKING-CONJOINT (vs known ranking — single respondent)")
         print(f"    Spearman rank correlation : {c['spearman']}")
         print(f"    Top-1 profile correct     : {c['top1_accuracy']}")
         print(f"    Avg top-3 overlap (of 3)  : {c['avg_top3_overlap']}\n")
+
+    if "choice_conjoint" in p:
+        c = p["choice_conjoint"]
+        print("  CHOICE-CONJOINT (vs 72-task real discrete-choice experiment)")
+        print(f"    Apple-type pref Spearman  : {c['type_spearman']}")
+        print(f"    Freshness pref Spearman   : {c['freshness_spearman']}")
+        print(f"    Price direction correct   : {c['price_sign_accuracy']}")
+        print(f"    Top apple type correct    : {c['top_type_accuracy']}")
+        print(f"    Top freshness correct     : {c['top_freshness_accuracy']}\n")
 
     if "comparison" in p:
         c = p["comparison"]
