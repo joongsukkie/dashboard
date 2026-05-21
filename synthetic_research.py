@@ -423,6 +423,212 @@ def _comparison_segment_note(per_segment: list[dict], winner: str,
 
 
 # -----------------------------------------------------------------------------
+# Study 4 — Conjoint (rank multi-attribute product profiles)
+# -----------------------------------------------------------------------------
+def run_conjoint_study(config: dict, profiles: list[dict],
+                       caller, api_key: str, brand: str = "the brand") -> dict:
+    """Each segment ranks a set of multi-attribute product profiles. We
+    aggregate to a panel ranking and derive part-worths — the average rank
+    contribution of each attribute level."""
+    cards = config.get("profiles") or []
+    attributes = config.get("attributes") or (
+        list(cards[0].keys()) if cards else [])
+    if len(cards) < 3:
+        return {"ok": False, "error": "Need at least 3 product profiles."}
+    if not profiles:
+        return {"ok": False, "error": "No segment profiles to survey."}
+
+    labels = [f"P{i+1}" for i in range(len(cards))]
+    card_block = "\n".join(
+        f"  {lab}: " + ", ".join(f"{k}={v}" for k, v in card.items())
+        for lab, card in zip(labels, cards))
+    weights = _norm_weights(profiles)
+    per_segment = []
+
+    for prof in profiles:
+        prompt = _persona_block(prof, brand) + f"""
+
+SURVEY TASK — CONJOINT RANKING
+Rank these {len(cards)} product profiles from 1 (THIS segment's most
+preferred) to {len(cards)} (least preferred). Every profile gets a unique
+rank. Judge them as this segment would, weighing price against the other
+attributes.
+
+{card_block}
+
+Return ONLY this JSON:
+{{"ranking": {{{', '.join(f'"{l}": <1..{len(cards)}>' for l in labels)}}}}}"""
+        try:
+            resp = _ask(caller, api_key, prompt)
+            raw = resp.get("ranking", {})
+            ranks = {l: float(raw[l]) for l in labels if l in raw and _is_num(raw[l])}
+            if len(ranks) < len(labels):
+                raise ValueError("incomplete ranking")
+            per_segment.append({"segment": prof["name"], "weight": prof.get("weight"),
+                                 "ranking": ranks})
+        except Exception as e:
+            per_segment.append({"segment": prof["name"], "weight": prof.get("weight"),
+                                 "error": str(e)[:160]})
+
+    ok = [s for s in per_segment if "ranking" in s]
+    if not ok:
+        return {"ok": False, "error": "Every segment call failed.",
+                "per_segment": per_segment}
+
+    # Weighted mean rank per profile (lower = more preferred).
+    mean_rank = {}
+    for lab in labels:
+        num = den = 0.0
+        for s, w in zip(per_segment, weights):
+            if "ranking" in s and lab in s["ranking"]:
+                num += s["ranking"][lab] * w
+                den += w
+        mean_rank[lab] = round(num / den, 3) if den else float(len(labels))
+
+    order = sorted(labels, key=lambda l: mean_rank[l])
+    predicted_ranking = [labels.index(l) for l in order]  # 0-based card indices
+
+    # Part-worths: mean profile rank per attribute level (lower = preferred).
+    part_worths: dict = {}
+    for attr in attributes:
+        levels: dict = {}
+        for lab, card in zip(labels, cards):
+            lvl = str(card.get(attr))
+            levels.setdefault(lvl, []).append(mean_rank[lab])
+        part_worths[attr] = {lvl: round(float(np.mean(v)), 2)
+                             for lvl, v in levels.items()}
+
+    spread = float(np.std([mean_rank[order[0]] for _ in [0]]) if False else 0.0)
+    top_card = cards[predicted_ranking[0]]
+
+    return {
+        "ok": True, "study_type": "conjoint", "brand": brand,
+        "per_segment": per_segment,
+        "aggregate": {"mean_rank": mean_rank,
+                      "predicted_ranking": predicted_ranking,
+                      "predicted_order_labels": order,
+                      "part_worths": part_worths,
+                      "top_profile": top_card},
+        "recommendation": (
+            f"Top profile for {brand}: " +
+            ", ".join(f"{k}={v}" for k, v in top_card.items()) +
+            ". Part-worths show which attribute levels drive preference."),
+        "confidence": _confidence(0.1, False, len(ok)),
+        "caveats": ["Synthetic conjoint — directional. Part-worths from a "
+                    "small synthetic panel are a prior; validate level "
+                    "preferences with a real conjoint survey before "
+                    "committing a product spec."],
+    }
+
+
+# -----------------------------------------------------------------------------
+# Study 5 — Van Westendorp Price Sensitivity Meter
+# -----------------------------------------------------------------------------
+def run_van_westendorp(config: dict, profiles: list[dict],
+                       caller, api_key: str, brand: str = "the brand") -> dict:
+    """Ask each segment the four Van Westendorp questions, then build the
+    cumulative price-sensitivity curves and locate OPP / IPP and the range
+    of acceptable prices."""
+    product = config.get("product", "the product")
+    if not profiles:
+        return {"ok": False, "error": "No segment profiles to survey."}
+
+    weights = _norm_weights(profiles)
+    per_segment = []
+    for prof in profiles:
+        prompt = _persona_block(prof, brand) + f"""
+
+SURVEY TASK — VAN WESTENDORP PRICE SENSITIVITY
+Product: {product}
+
+Give four price points (numbers only) for a TYPICAL customer in this
+segment, anchored to what the segment normally pays:
+  too_cheap     — so cheap they'd doubt the quality
+  cheap         — a clear bargain, great value
+  expensive     — getting pricey, but they'd still consider it
+  too_expensive — so expensive they would NOT buy
+
+Constraint: too_cheap < cheap < expensive < too_expensive.
+
+Return ONLY this JSON:
+{{"too_cheap": <n>, "cheap": <n>, "expensive": <n>, "too_expensive": <n>}}"""
+        try:
+            resp = _ask(caller, api_key, prompt)
+            pts = {k: float(resp[k]) for k in
+                   ("too_cheap", "cheap", "expensive", "too_expensive")
+                   if k in resp and _is_num(resp[k])}
+            if len(pts) < 4:
+                raise ValueError("incomplete price set")
+            # Enforce ordering.
+            ordered = sorted(pts.values())
+            pts = dict(zip(("too_cheap", "cheap", "expensive", "too_expensive"),
+                           ordered))
+            per_segment.append({"segment": prof["name"], "weight": prof.get("weight"),
+                                 **pts})
+        except Exception as e:
+            per_segment.append({"segment": prof["name"], "weight": prof.get("weight"),
+                                 "error": str(e)[:160]})
+
+    ok = [s for s in per_segment if "too_cheap" in s]
+    if not ok:
+        return {"ok": False, "error": "Every segment call failed.",
+                "per_segment": per_segment}
+
+    # Build a price grid and the four weighted cumulative curves.
+    all_prices = [s[k] for s in ok for k in
+                  ("too_cheap", "cheap", "expensive", "too_expensive")]
+    lo, hi = min(all_prices), max(all_prices)
+    grid = np.linspace(lo, hi, 60)
+    ws = [s.get("weight") or 0 for s in ok]
+    wsum = sum(ws) or 1.0
+    ws = [w / wsum for w in ws]
+
+    def cum(price, key, ge=True):
+        # weighted fraction whose `key` value is >= price (ge) or <= price.
+        return sum(w for s, w in zip(ok, ws)
+                   if (s[key] >= price if ge else s[key] <= price))
+
+    too_cheap     = [cum(p, "too_cheap", ge=True) for p in grid]      # descends
+    not_expensive = [cum(p, "expensive", ge=True) for p in grid]      # descends
+    cheap_curve   = [cum(p, "cheap", ge=True) for p in grid]          # descends
+    too_expensive = [cum(p, "too_expensive", ge=False) for p in grid] # ascends
+    expensive     = [cum(p, "expensive", ge=False) for p in grid]     # ascends
+
+    def intersect(a, b):
+        diffs = [abs(x - y) for x, y in zip(a, b)]
+        return float(grid[int(np.argmin(diffs))])
+
+    opp = intersect(too_cheap, too_expensive)      # optimal price point
+    ipp = intersect(cheap_curve, expensive)        # indifference price point
+    pmc = intersect(too_cheap, expensive)          # lower bound of acceptable
+    pme = intersect(cheap_curve, too_expensive)    # upper bound of acceptable
+
+    return {
+        "ok": True, "study_type": "van_westendorp", "brand": brand,
+        "product": product,
+        "per_segment": per_segment,
+        "aggregate": {
+            "optimal_price_point": round(opp, 2),
+            "indifference_price_point": round(ipp, 2),
+            "acceptable_range": [round(min(pmc, pme), 2), round(max(pmc, pme), 2)],
+            "curves": {"grid": [round(float(g), 2) for g in grid],
+                       "too_cheap": [round(x, 3) for x in too_cheap],
+                       "too_expensive": [round(x, 3) for x in too_expensive]},
+        },
+        "recommendation": (
+            f"Van Westendorp suggests an acceptable price range of "
+            f"${min(pmc, pme):,.2f}-${max(pmc, pme):,.2f} for {product}. "
+            f"The optimal price point (lowest price resistance) is "
+            f"${opp:,.2f}; the indifference price point is ${ipp:,.2f}."),
+        "confidence": _confidence(0.2, False, len(ok)),
+        "caveats": ["Synthetic Van Westendorp — the curves are built from a "
+                    "small per-segment panel, so the intersections are coarse. "
+                    "Treat the price RANGE as directional and validate with a "
+                    "real PSM survey before setting price."],
+    }
+
+
+# -----------------------------------------------------------------------------
 # Dispatcher
 # -----------------------------------------------------------------------------
 def run_study(study_type: str, config: dict, profiles: list[dict],
@@ -435,6 +641,10 @@ def run_study(study_type: str, config: dict, profiles: list[dict],
         return run_concept_test(config, profiles, caller, api_key, brand)
     if study_type == "comparison":
         return run_comparison_study(config, profiles, caller, api_key, brand)
+    if study_type == "conjoint":
+        return run_conjoint_study(config, profiles, caller, api_key, brand)
+    if study_type in ("van_westendorp", "vw", "psm"):
+        return run_van_westendorp(config, profiles, caller, api_key, brand)
     return {"ok": False, "error": f"Unknown study type: {study_type}"}
 
 

@@ -2057,6 +2057,55 @@ def _brand_from_filename(fn: str | None) -> str:
     return " ".join(words[:2]).title() if words else "the brand"
 
 
+def _load_calibration_profile() -> dict | None:
+    """Read calibration_profile.json if calibration.py has been run."""
+    try:
+        with open("calibration_profile.json") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _attach_calibration(result: dict, study_type: str) -> dict:
+    """Attach measured backtest accuracy to a synthetic result and, when the
+    calibration backtests graded this study type as less trustworthy than
+    the result claims, cap the confidence honestly."""
+    if not result.get("ok"):
+        return result
+    prof = _load_calibration_profile()
+    if not prof:
+        result["calibration"] = {
+            "status": "uncalibrated",
+            "message": ("Engine not yet validated against real datasets. "
+                        "Run calibration.py to backtest it."),
+        }
+        return result
+
+    # Map each study type to the backtest family that validates it.
+    trust_key = {"pricing": "pricing", "comparison": "comparison",
+                 "concept": "comparison", "conjoint": "conjoint",
+                 "van_westendorp": "pricing"}.get(study_type, "conjoint")
+    trust = (prof.get("trust") or {}).get(trust_key)
+    result["calibration"] = {
+        "status": "calibrated",
+        "validated_as": trust_key,
+        "trust": trust,
+        "conjoint": prof.get("conjoint"),
+        "comparison": prof.get("comparison"),
+        "notes": prof.get("notes", []),
+        "generated_at": prof.get("generated_at"),
+    }
+    # Honesty cap: never let a result claim more confidence than the
+    # backtests support.
+    rank = {"low": 0, "medium": 1, "high": 2}
+    if trust and rank.get(trust, 1) < rank.get(result.get("confidence", "medium"), 1):
+        result["confidence"] = trust
+        result.setdefault("caveats", []).append(
+            f"Confidence capped at '{trust}' — that is the trust grade the "
+            f"calibration backtests measured for {trust_key} studies.")
+    return result
+
+
 @app.route("/api/synthetic_research", methods=["POST"])
 def api_synthetic_research():
     """Run a persona-grounded synthetic survey on the analyzed dataset.
@@ -2082,7 +2131,8 @@ def api_synthetic_research():
 
     study_type = (body.get("study_type") or "").strip().lower()
     config = body.get("config") or {}
-    if study_type not in ("pricing", "concept", "comparison"):
+    if study_type not in ("pricing", "concept", "comparison",
+                          "conjoint", "van_westendorp"):
         return jsonify({"error": f"Unknown study type: {study_type}"}), 400
 
     roles = getattr(archetype, "role_columns", {}) or {}
@@ -2103,6 +2153,7 @@ def api_synthetic_research():
 
         result = sr_mod.run_study(study_type, config, profiles, demand,
                                   caller, api_key, brand)
+        result = _attach_calibration(result, study_type)
         result["segmentation_column"] = prof.get("segmentation_column")
         result["panel"] = [
             {"segment": p["name"], "weight": p.get("weight"),
