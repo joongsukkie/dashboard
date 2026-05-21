@@ -216,6 +216,10 @@ function renderDashboard(d) {
   renderArchetype(d.archetype);
   renderPlaybook(d.archetype, d.playbook);
 
+  // Synthetic research panel readiness
+  const srInfo = $("#sr-panel-info");
+  if (srInfo) srInfo.textContent = "Synthetic panel ready — digital twins of your customer segments";
+
   // ReturnLens card: only useful for reviews-shaped data or orders with returns
   const rlCard = $("#returnlens-card");
   const archName = d.archetype?.name;
@@ -807,6 +811,149 @@ async function rlDiagnose() {
   } catch (e) {
     box.innerHTML = `<div class="muted">Diagnose failed: ${esc(e.message)}</div>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic Research — persona-grounded synthetic surveys
+// ---------------------------------------------------------------------------
+const srStudyType = $("#sr-study-type");
+if (srStudyType) {
+  srStudyType.addEventListener("change", () => {
+    const t = srStudyType.value;
+    ["pricing", "concept", "comparison"].forEach(k => {
+      const el = $(`#sr-cfg-${k}`);
+      if (el) el.classList.toggle("hidden", k !== t);
+    });
+  });
+}
+const srRunBtn = $("#sr-run-btn");
+if (srRunBtn) srRunBtn.addEventListener("click", runSyntheticStudy);
+
+async function runSyntheticStudy() {
+  const type = $("#sr-study-type").value;
+  const results = $("#sr-results");
+  const btn = $("#sr-run-btn");
+
+  if (!state.apiKey) {
+    results.classList.remove("hidden");
+    results.innerHTML = `<div class="sr-err">Connect your AI key first.</div>`;
+    return;
+  }
+
+  // Build the config payload by study type.
+  let config = {};
+  if (type === "pricing") {
+    config.product = ($("#sr-product").value || "").trim();
+    config.price_points = ($("#sr-prices").value || "")
+      .split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+    if (!config.product || config.price_points.length < 2) {
+      results.classList.remove("hidden");
+      results.innerHTML = `<div class="sr-err">Enter a product and at least 2 price points.</div>`;
+      return;
+    }
+  } else if (type === "concept") {
+    config.concept = ($("#sr-concept").value || "").trim();
+    if (!config.concept) {
+      results.classList.remove("hidden");
+      results.innerHTML = `<div class="sr-err">Describe the concept to test.</div>`;
+      return;
+    }
+  } else if (type === "comparison") {
+    config.question = ($("#sr-question").value || "").trim() || "Which option do you prefer?";
+    config.options = ($("#sr-options").value || "")
+      .split("\n").map(s => s.trim()).filter(Boolean);
+    if (config.options.length < 2) {
+      results.classList.remove("hidden");
+      results.innerHTML = `<div class="sr-err">Enter at least 2 options, one per line.</div>`;
+      return;
+    }
+  }
+
+  btn.disabled = true;
+  results.classList.remove("hidden");
+  results.innerHTML = `<div class="muted small">Surveying the synthetic panel — one call per segment, ~10–40s…</div>`;
+
+  try {
+    const r = await fetch("/api/synthetic_research", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({study_type: type, config, api_key: state.apiKey}),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.ok) {
+      results.innerHTML = `<div class="sr-err">${esc(j.error || "Study failed")}</div>`;
+      return;
+    }
+    renderSyntheticResults(j);
+  } catch (e) {
+    results.innerHTML = `<div class="sr-err">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderSyntheticResults(j) {
+  const box = $("#sr-results");
+  const confClass = j.confidence === "high" ? "conf-high"
+                  : j.confidence === "medium" ? "conf-mid" : "conf-low";
+  let body = "";
+
+  if (j.study_type === "pricing") {
+    const curve = j.aggregate.curve || [];
+    const opt = j.aggregate.optimal_price;
+    body += `<table class="sr-table"><thead><tr>
+      <th>Price</th><th>Purchase probability</th><th>Revenue index</th><th>Segment spread</th></tr></thead><tbody>`;
+    curve.forEach(c => {
+      const isOpt = c.price === opt;
+      body += `<tr class="${isOpt ? 'sr-opt' : ''}">
+        <td>${c.price.toLocaleString(undefined,{style:'currency',currency:'USD',maximumFractionDigits:0})}</td>
+        <td>${(c.purchase_probability*100).toFixed(0)}%</td>
+        <td>${c.revenue_index.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+        <td>±${(c.segment_spread*100).toFixed(0)}%</td></tr>`;
+    });
+    body += `</tbody></table>`;
+  } else if (j.study_type === "concept") {
+    const a = j.aggregate;
+    body += `<div class="sr-bignum">${(a.overall_purchase_intent*100).toFixed(0)}%
+      <span>estimated overall purchase intent</span></div>`;
+    body += `<table class="sr-table"><thead><tr><th>Segment</th><th>Intent</th><th>Sentiment</th><th>Key objection</th></tr></thead><tbody>`;
+    (j.per_segment||[]).forEach(s => {
+      if (s.error) { body += `<tr><td>${esc(s.segment)}</td><td colspan="3" class="muted">call failed</td></tr>`; return; }
+      body += `<tr><td>${esc(s.segment)}</td><td>${(s.purchase_intent*100).toFixed(0)}%</td>
+        <td>${esc(s.sentiment||'')}</td><td class="muted small">${esc(s.key_objection||'')}</td></tr>`;
+    });
+    body += `</tbody></table>`;
+  } else if (j.study_type === "comparison") {
+    const shares = j.aggregate.preference_share || {};
+    const opts = j.options || {};
+    body += `<table class="sr-table"><thead><tr><th>Option</th><th>Preference share</th><th></th></tr></thead><tbody>`;
+    Object.keys(shares).forEach(k => {
+      const win = k === j.aggregate.winner;
+      body += `<tr class="${win?'sr-opt':''}"><td><b>${k}</b> · ${esc(opts[k]||'')}</td>
+        <td>${(shares[k]*100).toFixed(0)}%</td>
+        <td><div class="sr-bar"><div style="width:${(shares[k]*100).toFixed(0)}%"></div></div></td></tr>`;
+    });
+    body += `</tbody></table>`;
+  }
+
+  box.innerHTML = `
+    <div class="sr-rec">
+      <div class="sr-rec-head">Recommendation
+        <span class="sr-conf ${confClass}">confidence: ${esc(j.confidence||'—')}</span>
+      </div>
+      <div class="sr-rec-body">${esc(j.recommendation||'')}</div>
+    </div>
+    ${body}
+    <details class="sr-panel-detail">
+      <summary>Synthetic panel — ${(j.panel||[]).length} digital-twin segment(s)</summary>
+      <ul>${(j.panel||[]).map(p =>
+        `<li><b>${esc(p.segment)}</b> <span class="muted small">(${(p.weight*100).toFixed(0)}% · ${p.n_rows.toLocaleString()} real purchases)</span><br>
+         <span class="muted small">${esc(p.description||'')}</span></li>`).join("")}</ul>
+    </details>
+    <div class="sr-caveats">
+      <b>Caveats — read before deciding:</b>
+      <ul>${(j.caveats||[]).map(c => `<li>${esc(c)}</li>`).join("")}</ul>
+    </div>`;
 }
 
 // ---------------------------------------------------------------------------

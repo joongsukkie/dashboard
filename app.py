@@ -52,6 +52,10 @@ import rag
 import archetypes as arch_mod
 import playbooks as playbook_mod
 
+# Synthetic Research — persona-grounded synthetic market surveys
+import personas as personas_mod
+import synthetic_research as sr_mod
+
 
 # -----------------------------------------------------------------------------
 # App setup
@@ -2037,6 +2041,85 @@ Return a JSON object: {{
     except Exception as e:
         log.error(f"Diagnose failed: {e}\n{traceback.format_exc()}")
         return jsonify({"error": f"Diagnose failed: {str(e)[:200]}"}), 500
+
+
+# -----------------------------------------------------------------------------
+# Synthetic Research — Phase 2: persona-grounded synthetic market surveys
+# -----------------------------------------------------------------------------
+def _brand_from_filename(fn: str | None) -> str:
+    """Derive a readable brand name from the uploaded filename."""
+    if not fn:
+        return "the brand"
+    base = fn.rsplit(".", 1)[0].replace("_", " ").replace("-", " ")
+    stop = {"sales", "data", "cleaned", "uncleaned", "dataset", "export",
+            "final", "csv", "orders", "customers", "2", "v2", "copy"}
+    words = [w for w in base.split() if w.lower() not in stop]
+    return " ".join(words[:2]).title() if words else "the brand"
+
+
+@app.route("/api/synthetic_research", methods=["POST"])
+def api_synthetic_research():
+    """Run a persona-grounded synthetic survey on the analyzed dataset.
+
+    Requires a prior /api/analyze (cleaned_df + archetype must be in
+    session). Builds digital-twin segment personas, runs the requested
+    study type, returns aggregated results with caveats + confidence.
+    """
+    state = get_state()
+    body = request.get_json(silent=True) or {}
+
+    api_key = (body.get("api_key") or state.get("api_key") or "").strip()
+    provider = detect_provider(api_key) if api_key else state.get("provider")
+    df = state.get("cleaned_df")
+    archetype = state.get("archetype")
+
+    if df is None or archetype is None:
+        return jsonify({"error": "Run an analysis first — synthetic research "
+                                 "needs the cleaned dataset and detected "
+                                 "archetype."}), 400
+    if not api_key or not provider:
+        return jsonify({"error": "AI key missing or unrecognized."}), 400
+
+    study_type = (body.get("study_type") or "").strip().lower()
+    config = body.get("config") or {}
+    if study_type not in ("pricing", "concept", "comparison"):
+        return jsonify({"error": f"Unknown study type: {study_type}"}), 400
+
+    roles = getattr(archetype, "role_columns", {}) or {}
+    playbook = state.get("playbook")
+
+    try:
+        prof = personas_mod.build_segment_profiles(df, roles, playbook)
+        profiles = prof.get("profiles", [])
+        if len(profiles) < 2:
+            return jsonify({"error": prof.get("note", "Could not build at "
+                            "least 2 customer segments to survey. Synthetic "
+                            "research needs a segmentable dimension.")}), 400
+
+        demand = personas_mod.fit_demand_curve(df, roles)
+        caller = {"openai": call_openai, "anthropic": call_anthropic,
+                  "gemini": call_gemini}[provider]
+        brand = _brand_from_filename(state.get("filename"))
+
+        result = sr_mod.run_study(study_type, config, profiles, demand,
+                                  caller, api_key, brand)
+        result["segmentation_column"] = prof.get("segmentation_column")
+        result["panel"] = [
+            {"segment": p["name"], "weight": p.get("weight"),
+             "n_rows": p.get("n_rows"), "description": p.get("description")}
+            for p in profiles
+        ]
+        if demand.get("usable"):
+            result["demand_curve"] = {
+                "elasticity": demand.get("elasticity"),
+                "r_squared": demand.get("r_squared"),
+                "price_band": [demand.get("price_min"), demand.get("price_max")],
+            }
+        status = 200 if result.get("ok") else 400
+        return jsonify(result), status
+    except Exception as e:
+        log.error(f"Synthetic research failed: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": f"Synthetic research failed: {str(e)[:200]}"}), 500
 
 
 # -----------------------------------------------------------------------------

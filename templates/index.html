@@ -292,6 +292,67 @@
         </div>
       </div>
 
+      <!-- Synthetic Research — persona-grounded synthetic market surveys -->
+      <div id="synthetic-card" class="card span-12">
+        <div class="card-label-row">
+          <div class="card-label">🧪 Synthetic Research <span class="sr-tag">experimental</span></div>
+          <span id="sr-panel-info" class="muted small">Run an analysis first to build the synthetic panel</span>
+        </div>
+        <p class="muted small" style="margin-top:0;">
+          Survey a synthetic panel of <em>digital twins</em> — personas built
+          from the real customer segments in your data. Every result is a
+          research <em>prior</em>, shipped with caveats and a confidence grade,
+          not a measurement.
+        </p>
+
+        <div class="sr-controls">
+          <div class="sr-row">
+            <label class="sr-label">Study type</label>
+            <select id="sr-study-type">
+              <option value="pricing">Pricing study — purchase probability across price points</option>
+              <option value="concept">Concept test — purchase intent for a new idea</option>
+              <option value="comparison">Comparison — brands / products / messages</option>
+            </select>
+          </div>
+
+          <!-- Pricing config -->
+          <div id="sr-cfg-pricing" class="sr-cfg">
+            <div class="sr-row">
+              <label class="sr-label">What are you pricing?</label>
+              <input id="sr-product" placeholder="e.g. a new premium running shoe" />
+            </div>
+            <div class="sr-row">
+              <label class="sr-label">Price points</label>
+              <input id="sr-prices" placeholder="comma-separated, e.g. 49.99, 69.99, 89.99, 109.99" />
+            </div>
+          </div>
+
+          <!-- Concept config -->
+          <div id="sr-cfg-concept" class="sr-cfg hidden">
+            <div class="sr-row">
+              <label class="sr-label">Concept to test</label>
+              <textarea id="sr-concept" rows="2" placeholder="Describe the new product, feature, or offer — e.g. a $40/mo subscription box of seasonal gear"></textarea>
+            </div>
+          </div>
+
+          <!-- Comparison config -->
+          <div id="sr-cfg-comparison" class="sr-cfg hidden">
+            <div class="sr-row">
+              <label class="sr-label">Question</label>
+              <input id="sr-question" placeholder="e.g. Which message is more compelling?" />
+            </div>
+            <div class="sr-row">
+              <label class="sr-label">Options (one per line)</label>
+              <textarea id="sr-options" rows="3" placeholder="Just Do It — performance&#10;Move with comfort — everyday wear"></textarea>
+            </div>
+          </div>
+
+          <button id="sr-run-btn" class="btn btn-primary">Run synthetic study</button>
+        </div>
+
+        <div id="sr-results" class="sr-results hidden"></div>
+      </div>
+
       <!-- Charts -->
       <div id="charts-grid" class="charts-grid span-12"></div>
 
