@@ -67,6 +67,20 @@ def _ask(caller, api_key: str, prompt: str, retries: int = 1) -> dict:
     raise ValueError(f"model did not return valid JSON: {last_err}")
 
 
+def _all_failed(per_segment: list[dict]) -> dict:
+    """Build a failure result that SURFACES the real underlying errors —
+    so 'every call failed' is never a dead end. The per-segment loops catch
+    the actual API/parse exception into each segment's 'error' field; we
+    bubble a sample of them up into the error string the caller sees."""
+    errs = [str(s.get("error", "")).strip() for s in per_segment
+            if s.get("error")]
+    uniq = list(dict.fromkeys(errs))[:2]
+    detail = (" Causes: " + " || ".join(uniq)) if uniq else ""
+    return {"ok": False,
+            "error": "Every segment LLM call failed." + detail,
+            "per_segment": per_segment}
+
+
 def _norm_weights(profiles: list[dict]) -> list[float]:
     w = np.array([p.get("weight", 0) or 0 for p in profiles], dtype=float)
     if w.sum() <= 0:
@@ -195,8 +209,7 @@ Return ONLY this JSON:
 
     ok_segments = [s for s in per_segment if "purchase_probability" in s]
     if not ok_segments:
-        return {"ok": False, "error": "Every segment call failed.",
-                "per_segment": per_segment}
+        return _all_failed(per_segment)
 
     # Aggregate — weighted mean purchase probability per price.
     agg_curve = []
@@ -320,8 +333,7 @@ Return ONLY this JSON:
 
     ok = [s for s in per_segment if "purchase_intent" in s]
     if not ok:
-        return {"ok": False, "error": "Every segment call failed.",
-                "per_segment": per_segment}
+        return _all_failed(per_segment)
 
     overall = sum(s["purchase_intent"] * w for s, w in zip(per_segment, weights)
                   if "purchase_intent" in s)
@@ -403,8 +415,7 @@ Return ONLY this JSON:
 
     ok = [s for s in per_segment if "shares" in s]
     if not ok:
-        return {"ok": False, "error": "Every segment call failed.",
-                "per_segment": per_segment}
+        return _all_failed(per_segment)
 
     agg = {}
     for l in labels:
@@ -507,8 +518,7 @@ Return ONLY this JSON:
 
     ok = [s for s in per_segment if "ranking" in s]
     if not ok:
-        return {"ok": False, "error": "Every segment call failed.",
-                "per_segment": per_segment}
+        return _all_failed(per_segment)
 
     # Weighted mean rank per profile (lower = more preferred).
     mean_rank = {}
@@ -609,8 +619,7 @@ Return ONLY this JSON:
 
     ok = [s for s in per_segment if "too_cheap" in s]
     if not ok:
-        return {"ok": False, "error": "Every segment call failed.",
-                "per_segment": per_segment}
+        return _all_failed(per_segment)
 
     # Build a price grid and the four weighted cumulative curves.
     all_prices = [s[k] for s in ok for k in
