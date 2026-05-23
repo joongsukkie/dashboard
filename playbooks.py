@@ -845,6 +845,124 @@ def catalog_playbook(df: pd.DataFrame, roles: dict) -> dict:
 
 
 # -----------------------------------------------------------------------------
+# Apps playbook — mobile app-store catalogs (App Store / Play Store)
+# -----------------------------------------------------------------------------
+def apps_playbook(df: pd.DataFrame, roles: dict) -> dict:
+    """Analysis a marketing analyst at an app company actually wants:
+    genre mix, ratings (over RATED apps only), free vs paid, app size,
+    top developers, content-rating mix, release trend."""
+    out: dict = {"kpis": [], "segments": [], "tables": [],
+                 "alerts": [], "narrative_hooks": {}}
+    n = len(df)
+    out["kpis"].append(_kpi("Apps in catalog", f"{n:,}"))
+
+    genre_col  = roles.get("genre") or roles.get("category")
+    rating_col = roles.get("rating")
+    price_col  = roles.get("unit_price") or roles.get("amount")
+    size_col   = roles.get("app_size")
+    dev_col    = roles.get("developer")
+    date_col   = roles.get("date")
+
+    # ---- Free vs paid -------------------------------------------------------
+    free_col = next((c for c in df.columns
+                     if str(c).strip().lower() in ("free", "is_free")), None)
+    if free_col is not None:
+        try:
+            is_free = df[free_col].astype(bool)
+            free_pct = float(is_free.mean())
+            out["kpis"].append(_kpi("Free apps", _pct(free_pct),
+                                    detail=f"{int(is_free.sum()):,} of {n:,}"))
+            out["narrative_hooks"]["free_share"] = round(free_pct, 4)
+        except Exception:
+            free_col = None
+    if price_col and price_col in df.columns:
+        paid = df[price_col][df[price_col] > 0]
+        if len(paid):
+            out["kpis"].append(_kpi("Avg price (paid apps)", _money(float(paid.mean())),
+                                    detail=f"median {_money(float(paid.median()))}"))
+
+    # ---- Ratings — RATED apps only (cleaner nullified the unrated 0.0s) -----
+    if rating_col and rating_col in df.columns:
+        rated = df[rating_col].dropna()
+        if len(rated):
+            out["kpis"].append(_kpi("Avg rating (rated apps)", f"{rated.mean():.2f}",
+                                    detail=f"{len(rated):,} apps have a rating"))
+            unrated = n - len(rated)
+            out["kpis"].append(_kpi("Unrated apps", _pct(unrated / max(1, n)),
+                                    detail=f"{unrated:,} have no rating yet"))
+            out["narrative_hooks"]["avg_rating"] = round(float(rated.mean()), 2)
+            vc = rated.round().astype(int).value_counts().sort_index()
+            out["tables"].append({
+                "title": "Rating distribution (rated apps only)",
+                "columns": ["Stars", "Apps", "Share of rated"],
+                "rows": [[str(k), f"{int(v):,}", _pct(v / len(rated))]
+                         for k, v in vc.items()],
+                "note": "Apps with no rating are excluded — a 0.0 rating means "
+                        "unrated, not zero stars.",
+            })
+
+    # ---- App size -----------------------------------------------------------
+    if size_col and size_col in df.columns and pd.api.types.is_numeric_dtype(df[size_col]):
+        mb = df[size_col].dropna() / 1_000_000.0
+        if len(mb):
+            out["kpis"].append(_kpi("Median app size", f"{mb.median():.0f} MB",
+                                    detail=f"90th pct {mb.quantile(0.9):.0f} MB"))
+
+    # ---- Genre mix ----------------------------------------------------------
+    if genre_col and genre_col in df.columns:
+        vc = df[genre_col].dropna().value_counts().head(15)
+        rows = []
+        for g, cnt in vc.items():
+            avg_r = ""
+            if rating_col and rating_col in df.columns:
+                gr = df.loc[df[genre_col] == g, rating_col].dropna()
+                avg_r = f"{gr.mean():.2f}" if len(gr) else "—"
+            rows.append([str(g), f"{int(cnt):,}", _pct(cnt / n), avg_r])
+        out["tables"].append({
+            "title": f"Genre mix ({genre_col})",
+            "columns": [genre_col, "Apps", "Share", "Avg rating"],
+            "rows": rows,
+            "note": "Avg rating computed over rated apps in each genre.",
+        })
+        out["narrative_hooks"]["top_genre"] = str(vc.index[0])
+
+    # ---- Content-rating mix -------------------------------------------------
+    cr_col = roles.get("content_rating")
+    if cr_col and cr_col in df.columns:
+        vc = df[cr_col].dropna().value_counts().head(8)
+        out["tables"].append({
+            "title": f"Content-rating mix ({cr_col})",
+            "columns": [cr_col, "Apps", "Share"],
+            "rows": [[str(k), f"{int(v):,}", _pct(v / n)] for k, v in vc.items()],
+            "note": "",
+        })
+
+    # ---- Top developers -----------------------------------------------------
+    if dev_col and dev_col in df.columns:
+        vc = df[dev_col].dropna().value_counts().head(10)
+        out["tables"].append({
+            "title": "Most prolific developers (by app count)",
+            "columns": [dev_col, "Apps published"],
+            "rows": [[str(k), f"{int(v):,}"] for k, v in vc.items()],
+            "note": "",
+        })
+
+    # ---- Release trend ------------------------------------------------------
+    if date_col and date_col in df.columns and df[date_col].dtype.kind == "M":
+        per_year = df[date_col].dt.year.dropna().astype(int).value_counts().sort_index()
+        out["tables"].append({
+            "title": "Apps released per year",
+            "columns": ["Year", "Apps released"],
+            "rows": [[str(int(y)), f"{int(c):,}"] for y, c in per_year.items()][-12:],
+            "note": "By first-release date.",
+        })
+
+    if n < 50:
+        out["alerts"].append(f"Small catalog ({n} apps) — genre patterns are noisy.")
+    return out
+
+
+# -----------------------------------------------------------------------------
 # Archetype-aware chart builders
 # -----------------------------------------------------------------------------
 def _fig_dict(fig) -> dict:
@@ -1129,6 +1247,79 @@ def _catalog_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]
     return charts
 
 
+def _apps_charts(df: pd.DataFrame, roles: dict, playbook: dict) -> list[dict]:
+    import plotly.express as px
+    charts = []
+    genre_col  = roles.get("genre") or roles.get("category")
+    rating_col = roles.get("rating")
+    size_col   = roles.get("app_size")
+    date_col   = roles.get("date")
+
+    # Top genres by app count.
+    if genre_col and genre_col in df.columns:
+        vc = df[genre_col].dropna().value_counts().head(12).reset_index()
+        vc.columns = [genre_col, "apps"]
+        fig = px.bar(vc, x="apps", y=genre_col, orientation="h", color=genre_col,
+                     color_discrete_sequence=CHART_PALETTE)
+        fig.update_layout(showlegend=False, yaxis={"categoryorder": "total ascending"})
+        fig = _layout(fig, f"Apps per {genre_col}")
+        charts.append({
+            "title": f"Apps per {genre_col}",
+            "insight": "A crowded genre means tougher discovery; a thin genre "
+                       "can be a positioning opening.",
+            "figure": _fig_dict(fig)})
+
+    # Rating distribution (rated apps only — cleaner nullified unrated 0.0s).
+    if rating_col and rating_col in df.columns:
+        rated = df[rating_col].dropna().round().astype(int)
+        if len(rated):
+            vc = rated.value_counts().sort_index().reset_index()
+            vc.columns = ["stars", "apps"]
+            cmap = {1:"#DC2626",2:"#F97316",3:"#CA8A04",4:"#65A30D",5:"#15803D"}
+            fig = px.bar(vc, x="stars", y="apps", color="stars",
+                         color_discrete_map=cmap)
+            fig.update_layout(showlegend=False)
+            fig = _layout(fig, "Rating distribution (rated apps only)")
+            charts.append({
+                "title": "Rating distribution",
+                "insight": "App-store ratings skew high — most rated apps sit "
+                           "at 4-5 stars, so a 3-star app is effectively bottom-tier.",
+                "figure": _fig_dict(fig)})
+
+    # App size distribution (MB).
+    if size_col and size_col in df.columns and pd.api.types.is_numeric_dtype(df[size_col]):
+        mb = (df[size_col].dropna() / 1_000_000.0)
+        mb = mb[(mb > 0) & (mb < mb.quantile(0.98))]
+        if len(mb):
+            fig = px.histogram(mb, nbins=40, color_discrete_sequence=[CHART_PALETTE[0]])
+            fig.update_layout(showlegend=False)
+            fig.update_xaxes(title_text="App size (MB)")
+            fig.update_yaxes(title_text="Apps")
+            fig = _layout(fig, "App size distribution (MB)")
+            charts.append({
+                "title": "App size distribution",
+                "insight": "Larger apps face download friction on cellular — "
+                           "watch where your app sits in this distribution.",
+                "figure": _fig_dict(fig)})
+
+    # Releases per year.
+    if date_col and date_col in df.columns and df[date_col].dtype.kind == "M":
+        yr = df[date_col].dt.year.dropna().astype(int)
+        yr = yr[(yr >= 2008) & (yr <= 2030)]
+        if len(yr):
+            vc = yr.value_counts().sort_index().reset_index()
+            vc.columns = ["year", "apps"]
+            fig = px.bar(vc, x="year", y="apps",
+                         color_discrete_sequence=[CHART_PALETTE[2]])
+            fig = _layout(fig, "Apps released per year")
+            charts.append({
+                "title": "Release trend",
+                "insight": "Release volume per year shows how saturated the "
+                           "store has become — recent years are the competition.",
+                "figure": _fig_dict(fig)})
+    return charts
+
+
 _CHART_BUILDERS = {
     "orders":        _orders_charts,
     "marketing":     _marketing_charts,
@@ -1136,6 +1327,7 @@ _CHART_BUILDERS = {
     "sessions":      _sessions_charts,
     "reviews":       _reviews_charts,
     "catalog":       _catalog_charts,
+    "apps":          _apps_charts,
 }
 
 
@@ -1164,6 +1356,7 @@ PLAYBOOKS = {
     "sessions":      sessions_playbook,
     "reviews":       reviews_playbook,
     "catalog":       catalog_playbook,
+    "apps":          apps_playbook,
 }
 
 

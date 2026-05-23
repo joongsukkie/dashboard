@@ -465,10 +465,16 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         "units", "mrp", "cost", "spend", "total", "gmv", "value",
     )
     RATE_HINTS = ("discount", "rate", "ratio", "pct", "percent", "conversion", "ctr")
+    # Rating columns: a 0.0 average rating almost always means UNRATED, not
+    # a genuine zero-star average (real averages bottom out near 1). On the
+    # Apple App Store data ~56% of apps are unrated — counting their 0.0 as
+    # a real rating drags the catalog average from ~4.0 down to ~1.8.
+    RATING_HINTS = ("rating", "score", "stars", "csat")
 
     summary["suspect_zeros_nulled"] = {}
     summary["suspect_negatives_nulled"] = {}
     summary["invalid_rates_nulled"] = {}
+    summary["unrated_nulled"] = {}
 
     n = len(df)
     for col in df.columns:
@@ -477,6 +483,7 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         name_l = str(col).lower()
         is_amount = any(h in name_l for h in AMOUNT_POSITIVE_HINTS)
         is_rate = any(h in name_l for h in RATE_HINTS)
+        is_rating = any(h in name_l for h in RATING_HINTS)
 
         if is_amount:
             neg_mask = df[col] < 0
@@ -495,7 +502,7 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
                 summary["suspect_zeros_nulled"][col] = n_zer
                 df.loc[zer_mask, col] = np.nan
 
-        if is_rate:
+        if is_rate and not is_rating:
             col_nn = df[col].dropna()
             if len(col_nn):
                 # Decide scale: if max <= 1.5 we treat as 0–1 fraction,
@@ -506,6 +513,18 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
                 if n_inv:
                     summary["invalid_rates_nulled"][col] = n_inv
                     df.loc[invalid_mask, col] = np.nan
+
+        if is_rating:
+            col_nn = df[col].dropna()
+            # Only treat as a rating if the scale looks like one (0–10) —
+            # guards against e.g. credit scores in the hundreds.
+            if len(col_nn) and 0 < col_nn.max() <= 10:
+                zer_mask = df[col] == 0
+                z_frac = zer_mask.sum() / max(1, n)
+                if z_frac >= 0.01:
+                    n_zer = int(zer_mask.sum())
+                    summary["unrated_nulled"][col] = n_zer
+                    df.loc[zer_mask, col] = np.nan
 
     # 7. Reconstruct derived amount columns. If a column looks like
     #    revenue/total but has lots of null values, and we can find
@@ -751,6 +770,12 @@ ARCHETYPE_VOCAB = {
     "catalog": (
         "margin by category, stockout risk, long-tail revenue share, "
         "seasonal SKUs, price-elasticity proxies, assortment depth."
+    ),
+    "apps": (
+        "genre / category mix, average rating (over RATED apps only — a 0.0 "
+        "rating means unrated, not zero stars), free vs paid split, in-app "
+        "purchase / monetization model, app size, content rating, top "
+        "developers, release cadence, store-saturation by genre."
     ),
     "generic": (
         "Standard exploratory data analysis — distributions, top categories, "

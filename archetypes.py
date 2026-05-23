@@ -74,7 +74,8 @@ ROLE_PATTERNS: dict[str, list[str]] = {
     "mrr":         [r"\bmrr\b", r"monthly[\s_-]?recurring",
                     r"monthly[\s_-]?charge", r"recurring[\s_-]?charge"],
     "subscription_tenure": [r"^tenure$", r"tenure[\s_-]?months", r"months[\s_-]?as[\s_-]?customer"],
-    "rating":      [r"^rating$", r"stars?", r"score", r"^nps$", r"^csat$"],
+    "rating":      [r"^rating$", r"stars?", r"score", r"^nps$", r"^csat$",
+                    r"(average|avg|user|app)[\s_-]?rating", r"rating$"],
     "review_text": [r"review[\s_-]?(text|body|content)", r"^review$", r"comment",
                     r"feedback", r"verbatim"],
     "date":        [r"^date$", r"created[\s_-]?at", r"timestamp", r"event[\s_-]?date",
@@ -82,10 +83,20 @@ ROLE_PATTERNS: dict[str, list[str]] = {
                     r"signup", r"signed[\s_-]?up",
                     r"invoice[\s_-]?date",        # UCI Online Retail
                     r"purchase[\s_-]?timestamp",  # Olist
-                    r"approved[\s_-]?at"],
+                    r"approved[\s_-]?at",
+                    r"^released?$", r"release[\s_-]?date"],  # App Store
     "return_flag": [r"is[\s_-]?return", r"returned", r"refund(ed)?", r"is[\s_-]?refund"],
     "return_reason":[r"return[\s_-]?reason", r"refund[\s_-]?reason"],
     "stock":       [r"^stock$", r"inventory", r"on[\s_-]?hand", r"qty[\s_-]?available"],
+    # --- mobile-app catalog roles ---
+    "app_id":      [r"^app[\s_-]?id$", r"bundle[\s_-]?id", r"track[\s_-]?id"],
+    "app_name":    [r"^app[\s_-]?name$", r"app[\s_-]?title"],
+    "genre":       [r"genre", r"app[\s_-]?category"],
+    "content_rating":[r"content[\s_-]?rating", r"age[\s_-]?rating"],
+    "os_version":  [r"ios[\s_-]?version", r"required[\s_-]?ios", r"required[\s_-]?os",
+                    r"minimum[\s_-]?os"],
+    "app_size":    [r"size[\s_-]?bytes", r"app[\s_-]?size", r"file[\s_-]?size"],
+    "developer":   [r"^developer$", r"developer[\s_-]?name", r"^publisher$"],
 }
 
 
@@ -130,7 +141,7 @@ def _row_grain_unique_ratio(df: pd.DataFrame, col: str) -> float:
 
 
 ARCHETYPES = ("orders", "customers", "marketing", "sessions",
-              "subscriptions", "reviews", "catalog")
+              "subscriptions", "reviews", "catalog", "apps")
 
 
 def score_archetypes(df: pd.DataFrame, roles: dict[str, str]) -> dict[str, dict]:
@@ -271,6 +282,26 @@ def score_archetypes(df: pd.DataFrame, roles: dict[str, str]) -> dict[str, dict]
         add("catalog", 0.10, f"category column ({roles['category']})")
         add("orders", 0.05, "category column")
 
+    # ---------------- mobile-app catalog (App Store / Play Store) ------------
+    # These columns are near-unique to app-store data — they don't appear in
+    # any other archetype, so they identify 'apps' decisively.
+    if "app_id" in roles or "app_name" in roles:
+        add("apps", 0.30, "app id/name column")
+    if "genre" in roles:
+        add("apps", 0.25, f"genre column ({roles['genre']})")
+    if "content_rating" in roles:
+        add("apps", 0.20, f"content-rating column ({roles['content_rating']})")
+    if "os_version" in roles:
+        add("apps", 0.25, f"iOS/OS-version column ({roles['os_version']})")
+    if "app_size" in roles:
+        add("apps", 0.20, f"app-size column ({roles['app_size']})")
+    # An app catalog also looks SKU-ish and review-ish; once 'apps' is
+    # clearly in play, damp those so it wins cleanly.
+    if scores["apps"]["score"] >= 0.5:
+        scores["catalog"]["score"] -= 0.30
+        scores["reviews"]["score"] -= 0.20
+        scores["catalog"]["signals"].append("(penalty) app-store data, not generic catalog")
+
     # Penalize 'orders' when there's no date and no qty — it's probably
     # something else.
     if "date" not in roles:
@@ -314,5 +345,6 @@ def archetype_description(name: str) -> str:
         "subscriptions": "Subscription events — MRR and churn",
         "reviews":       "Reviews / NPS — customer voice text",
         "catalog":       "Product catalog — one row per SKU",
+        "apps":          "Mobile app catalog — App Store / Play Store listings",
         "generic":       "Unrecognized B2C archetype — running generalist analysis",
     }.get(name, "B2C dataset")

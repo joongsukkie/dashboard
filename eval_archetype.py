@@ -161,6 +161,26 @@ def _synthetic_fixtures(seed: int = 7) -> list[Fixture]:
         "stock":        rng.integers(0, 500, n),
     })))
 
+    # --- mobile app catalog (App Store / Play Store shape) -----------------
+    n = 200
+    out.append(Fixture("apps_catalog", "apps", pd.DataFrame({
+        "App_Id":               [f"com.example.app{i}" for i in range(n)],
+        "App_Name":             [f"App {i}" for i in range(n)],
+        "Primary_Genre":        rng.choice(["Games","Education","Productivity",
+                                            "Lifestyle","Utilities","Health & Fitness"], n),
+        "Content_Rating":       rng.choice(["4+","9+","12+","17+"], n),
+        "Size_Bytes":           rng.integers(5_000_000, 500_000_000, n),
+        "Required_IOS_Version": rng.choice(["12.0","13.0","14.0","15.0"], n),
+        "Released":             pd.date_range("2018-01-01", periods=n, freq="3D"),
+        "Price":                np.where(rng.random(n) > 0.9,
+                                          rng.uniform(0.99, 9.99, n).round(2), 0.0),
+        "Free":                 rng.random(n) > 0.1,
+        "Average_User_Rating":  rng.choice([0.0, 4.0, 4.5, 5.0], n,
+                                            p=[0.5, 0.2, 0.2, 0.1]),
+        "Reviews":              rng.integers(0, 5000, n),
+        "Developer":            rng.choice([f"Dev {i}" for i in range(50)], n),
+    })))
+
     return out
 
 
