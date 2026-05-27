@@ -844,13 +844,16 @@ def call_openai(api_key: str, prompt: str, strict: bool = False) -> str:
     system = "You are a data analytics expert. Return only valid JSON."
     if strict:
         system += " Your previous response was not valid JSON. Return ONLY a JSON object with no other text, no markdown, no fences."
+    # NOTE: GPT-5 / o-series models reject any non-default temperature
+    # (only 1 is allowed). JSON mode plus the strict system prompt already
+    # keep the output tight, so we omit the param — keeps the call portable
+    # across gpt-5-mini, gpt-5, gpt-4.1-mini, gpt-4o, etc.
     resp = client.chat.completions.create(
         model=OPENAI_NARRATIVE_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
         response_format={"type": "json_object"},
     )
     return resp.choices[0].message.content
