@@ -433,7 +433,12 @@ def clean_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         if len(nn) == 0:
             continue
         nunique = nn.nunique()
-        if 2 <= nunique <= max(40, int(len(nn) * 0.1)):
+        # Fuzzy canonicalization is O(unique^2) — only worth running on
+        # genuinely low-cardinality categorical columns (channel, region,
+        # plan tier, etc.). A 200-value cap keeps it under ~40k comparisons
+        # per column even on a 100k-row CSV; high-cardinality fields like
+        # product names / SKUs / order IDs are skipped.
+        if 2 <= nunique <= 200:
             merged, audit = _fuzzy_canonicalize(nn, cutoff=0.85)
             if audit:
                 df.loc[nn.index, col] = merged
@@ -830,7 +835,7 @@ def _build_prompt(profile: dict, mode: str, custom: str, benchmarks: list,
 # Narrative model for OpenAI users. Set via OPENAI_MODEL env var if you
 # need to swap it without redeploying; defaults to the user-specified
 # gpt-5.4-mini build.
-OPENAI_NARRATIVE_MODEL = os.environ.get("OPENAI_NARRATIVE_MODEL", "gpt-5.4-mini")
+OPENAI_NARRATIVE_MODEL = os.environ.get("OPENAI_NARRATIVE_MODEL", "gpt-5-mini")
 
 
 def call_openai(api_key: str, prompt: str, strict: bool = False) -> str:

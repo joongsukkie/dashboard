@@ -9,11 +9,38 @@ const state = {
   tableRows: [],
   tableCols: [],
   tableSort: { col: null, dir: 1 },
-  apiKey: "",        // kept in JS memory only; sent with each server call
+  apiKey: "",          // kept in JS memory only; sent with each server call
+  apiKeyConnected: false, // true only after /api/config returns ok
   provider: "",
-  fileBlob: null,    // cached for silent re-upload if server loses state
+  fileBlob: null,      // cached for silent re-upload if server loses state
   fileName: "",
+  fileUploaded: false, // true only after /api/upload returns ok
 };
+
+// Gate the two run-buttons: both prerequisites must be true and no
+// in-flight job. We re-check on every state-changing event so the user
+// can never click a button that would error.
+function refreshRunButtons() {
+  const runBtn = document.getElementById("run-analysis");
+  const skipBtn = document.getElementById("skip-to-synthetic");
+  const ready = state.apiKeyConnected && state.fileUploaded && !state.busy;
+  const tip = state.busy
+    ? "Working on it…"
+    : (!state.apiKeyConnected && !state.fileUploaded)
+      ? "Connect your API key and upload a CSV first"
+      : !state.apiKeyConnected
+        ? "Connect your API key first"
+        : !state.fileUploaded
+          ? "Upload a CSV first"
+          : "";
+  [runBtn, skipBtn].forEach(b => {
+    if (!b) return;
+    b.disabled = !ready;
+    b.title = tip;
+  });
+}
+
+function setBusy(b) { state.busy = b; refreshRunButtons(); }
 
 // ---------------------------------------------------------------------------
 // Setup: save API key
@@ -25,6 +52,8 @@ async function connectKey() {
   const api_key = $("#api-key").value.trim();
   const s = $("#key-status");
   s.textContent = ""; s.className = "status-line";
+  state.apiKeyConnected = false;     // reset on every attempt
+  refreshRunButtons();
   if (!api_key) { s.textContent = "Enter an API key to continue."; s.classList.add("err"); return; }
   s.textContent = "Connecting…";
   try {
@@ -37,13 +66,27 @@ async function connectKey() {
     if (!r.ok) throw new Error(j.error || "Failed");
     state.apiKey = api_key;
     state.provider = j.provider;
+    state.apiKeyConnected = true;
     s.innerHTML = `✓ Connected · <b>${j.label}</b>`;
     s.classList.add("ok");
   } catch (e) {
     s.textContent = e.message;
     s.classList.add("err");
+  } finally {
+    refreshRunButtons();
   }
 }
+
+// Editing the key after connecting should re-invalidate the connection
+// so the user re-confirms with the new value before running.
+$("#api-key").addEventListener("input", () => {
+  if (state.apiKeyConnected) {
+    state.apiKeyConnected = false;
+    const s = $("#key-status");
+    s.textContent = "Key edited — click Connect again."; s.className = "status-line";
+    refreshRunButtons();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Upload
@@ -71,12 +114,18 @@ async function handleUpload(file) {
   // server loses state (cold start, process restart, etc).
   state.fileBlob = file;
   state.fileName = file.name;
+  state.fileUploaded = false;
+  refreshRunButtons();
   try {
     const j = await uploadBlob(file);
     s.textContent = `✓ ${j.filename} — ${j.rows.toLocaleString()} rows × ${j.cols} columns`;
     s.classList.add("ok");
+    state.fileUploaded = true;
   } catch (e) {
     s.textContent = e.message; s.classList.add("err");
+    state.fileUploaded = false;
+  } finally {
+    refreshRunButtons();
   }
 }
 
@@ -122,7 +171,7 @@ $("#run-analysis").addEventListener("click", runAnalysis);
 async function runAnalysis() {
   const status = $("#run-status");
   status.textContent = ""; status.className = "status-line center";
-  const btn = $("#run-analysis"); btn.disabled = true;
+  setBusy(true);
   const prog = $("#progress"); prog.classList.remove("hidden");
   setStep(1);
 
@@ -142,13 +191,13 @@ async function runAnalysis() {
   if (!state.apiKey) {
     status.textContent = "Enter your API key first.";
     status.classList.add("err");
-    btn.disabled = false; prog.classList.add("hidden");
+    setBusy(false); prog.classList.add("hidden");
     return;
   }
   if (!state.fileBlob) {
     status.textContent = "Upload a CSV first.";
     status.classList.add("err");
-    btn.disabled = false; prog.classList.add("hidden");
+    setBusy(false); prog.classList.add("hidden");
     return;
   }
 
@@ -162,8 +211,14 @@ async function runAnalysis() {
         archetype_override: state.archetypeOverride || null,
       }),
     });
-    const j = await r.json().catch(() => ({}));
-    return { ok: r.ok, status: r.status, body: j };
+    // Some failures (gunicorn worker timeout, 502/504 from Render) don't
+    // return JSON. Fall back to raw text so the user sees *something*.
+    let body = {};
+    try { body = await r.json(); }
+    catch (_) {
+      try { body = { error: (await r.text()).slice(0, 400) }; } catch (_) {}
+    }
+    return { ok: r.ok, status: r.status, body };
   };
 
   try {
@@ -178,7 +233,14 @@ async function runAnalysis() {
       res = await doAnalyze();
     }
 
-    if (!res.ok) throw new Error(res.body.error || "Analysis failed");
+    if (!res.ok) {
+      const serverMsg = (res.body && res.body.error)
+        ? res.body.error
+        : (res.status === 504 || res.status === 502)
+          ? `Server timed out (HTTP ${res.status}) — the AI call took too long. Try a smaller CSV or 'Skip to synthetic data'.`
+          : `Analysis failed (HTTP ${res.status})`;
+      throw new Error(serverMsg);
+    }
     setStep(3);
     state.lastData = res.body;
     renderDashboard(res.body);
@@ -188,7 +250,7 @@ async function runAnalysis() {
   } catch (e) {
     status.textContent = e.message; status.classList.add("err");
   } finally {
-    btn.disabled = false;
+    setBusy(false);
     prog.classList.add("hidden");
     $$(".progress-step").forEach(s => s.classList.remove("active", "done"));
   }
@@ -1239,9 +1301,7 @@ async function skipToSynthetic() {
     return;
   }
 
-  const skipBtn = $("#skip-to-synthetic");
-  const runBtn = $("#run-analysis");
-  skipBtn.disabled = true; runBtn.disabled = true;
+  setBusy(true);
   status.textContent = "Cleaning data and detecting archetype…";
 
   const doPrep = async () => {
@@ -1250,8 +1310,12 @@ async function skipToSynthetic() {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ archetype_override: state.archetypeOverride || null }),
     });
-    const j = await r.json().catch(() => ({}));
-    return { ok: r.ok, body: j };
+    let body = {};
+    try { body = await r.json(); }
+    catch (_) {
+      try { body = { error: (await r.text()).slice(0, 400) }; } catch (_) {}
+    }
+    return { ok: r.ok, status: r.status, body };
   };
 
   try {
@@ -1261,7 +1325,12 @@ async function skipToSynthetic() {
       try { await uploadBlob(state.fileBlob); } catch (_) {}
       res = await doPrep();
     }
-    if (!res.ok) throw new Error(res.body.error || "Quick prep failed");
+    if (!res.ok) {
+      const serverMsg = (res.body && res.body.error)
+        ? res.body.error
+        : `Prep failed (HTTP ${res.status})`;
+      throw new Error(serverMsg);
+    }
 
     // Stash a minimal lastData so the dashboard chrome has something
     // sane to read (title bar, archetype badge).
@@ -1292,7 +1361,7 @@ async function skipToSynthetic() {
   } catch (e) {
     status.textContent = e.message; status.classList.add("err");
   } finally {
-    skipBtn.disabled = false; runBtn.disabled = false;
+    setBusy(false);
   }
 }
 

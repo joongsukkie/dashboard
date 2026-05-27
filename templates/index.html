@@ -45,7 +45,7 @@
           <button id="save-key" class="btn btn-primary">Connect</button>
         </div>
         <div class="provider-hints">
-          <span class="hint-chip">OpenAI <code>gpt-5.4-mini</code></span>
+          <span class="hint-chip">OpenAI <code>gpt-5-mini</code></span>
           <span class="hint-chip">Anthropic <code>claude-sonnet-4</code></span>
           <span class="hint-chip">Google <code>gemini-1.5-pro</code></span>
           <span class="hint-chip muted">auto-detected</span>
@@ -98,11 +98,11 @@
     </div>
 
     <div class="run-row">
-      <button id="run-analysis" class="btn btn-primary btn-lg grow">
+      <button id="run-analysis" class="btn btn-primary btn-lg grow" disabled title="Connect your API key and upload a CSV first">
         Generate dashboard
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
       </button>
-      <button id="skip-to-synthetic" class="btn btn-secondary btn-lg" title="Skip the dashboard and jump straight to synthetic surveys, conjoint, Van Westendorp, A/B sims.">
+      <button id="skip-to-synthetic" class="btn btn-secondary btn-lg" disabled title="Connect your API key and upload a CSV first">
         Skip to synthetic data
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
       </button>
