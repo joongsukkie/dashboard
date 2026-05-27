@@ -163,8 +163,50 @@ textarea { resize: vertical; line-height: 1.6; }
   box-shadow: 0 1px 2px rgba(21, 128, 61, 0.28), inset 0 1px 0 rgba(255,255,255,0.18);
 }
 .btn-accent:hover { background: var(--accent-600); border-color: var(--accent-700); }
+.btn-secondary {
+  background: var(--surface); color: var(--ink); border-color: var(--ink);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.4), 0 1px 2px rgba(0,0,0,0.04);
+}
+.btn-secondary:hover {
+  background: var(--surface-2); border-color: var(--ink);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.4), 0 4px 14px rgba(20,32,22,0.10);
+}
+.btn-secondary:disabled {
+  background: var(--surface-2); border-color: var(--line-strong);
+  color: var(--ink-dim); cursor: not-allowed; transform: none; box-shadow: none;
+}
 .btn-lg { padding: 15px 26px; font-size: 15.5px; font-weight: 600; }
 .btn.small { padding: 6px 12px; font-size: 12.5px; }
+.grow { flex: 1 1 auto; }
+.run-row {
+  display: flex; gap: 12px; align-items: stretch; margin-top: 18px;
+}
+@media (max-width: 640px) {
+  .run-row { flex-direction: column; }
+}
+
+/* ==========================================================================
+   Synthetic-only dashboard mode
+   When the user picked "Skip to synthetic data", the dashboard layout
+   collapses to just the synthetic card. Everything else is hidden,
+   keeping the topbar and the synthetic card front-and-center.
+   ========================================================================== */
+body.synthetic-only #dashboard .dash-grid > .card:not(#synthetic-card),
+body.synthetic-only #dashboard #kpi-row,
+body.synthetic-only #dashboard #charts-grid {
+  display: none !important;
+}
+body.synthetic-only #dashboard #synthetic-card {
+  margin-top: 6px;
+}
+/* In skip mode, dashboard-only top-bar buttons (chat/sql/excel/pdf)
+   make no sense — synthetic study has its own export. Keep them hidden
+   until the user upgrades to a full dashboard. */
+body.synthetic-only #btn-chat,
+body.synthetic-only #btn-sql,
+body.synthetic-only #btn-excel,
+body.synthetic-only #btn-pdf { display: none !important; }
 
 /* ==========================================================================
    Nav + Hero

@@ -45,7 +45,7 @@
           <button id="save-key" class="btn btn-primary">Connect</button>
         </div>
         <div class="provider-hints">
-          <span class="hint-chip">OpenAI <code>gpt-4o</code></span>
+          <span class="hint-chip">OpenAI <code>gpt-5.4-mini</code></span>
           <span class="hint-chip">Anthropic <code>claude-sonnet-4</code></span>
           <span class="hint-chip">Google <code>gemini-1.5-pro</code></span>
           <span class="hint-chip muted">auto-detected</span>
@@ -97,10 +97,16 @@
       </div>
     </div>
 
-    <button id="run-analysis" class="btn btn-primary btn-lg full-width">
-      Generate dashboard
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-    </button>
+    <div class="run-row">
+      <button id="run-analysis" class="btn btn-primary btn-lg grow">
+        Generate dashboard
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+      </button>
+      <button id="skip-to-synthetic" class="btn btn-secondary btn-lg" title="Skip the dashboard and jump straight to synthetic surveys, conjoint, Van Westendorp, A/B sims.">
+        Skip to synthetic data
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+      </button>
+    </div>
     <div id="run-status" class="status-line center"></div>
 
     <!-- Progress -->
@@ -174,6 +180,7 @@
       <button id="btn-sql" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>SQL</button>
       <button id="btn-excel" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Excel</button>
       <button id="btn-pdf" class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>PDF</button>
+      <button id="btn-build-dashboard" class="btn btn-primary hidden" title="Run the full archetype playbook, charts, AB tests, and exec summary now.">Build full dashboard</button>
       <button id="btn-new" class="btn btn-primary">New analysis</button>
     </div>
   </header>

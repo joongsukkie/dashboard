@@ -207,6 +207,11 @@ function setStep(n) {
 // Dashboard rendering
 // ---------------------------------------------------------------------------
 function renderDashboard(d) {
+  // Coming from /api/analyze always means a full dashboard. Drop any
+  // skip-mode chrome left over from a prior synthetic-only run.
+  document.body.classList.remove("synthetic-only");
+  $("#btn-build-dashboard").classList.add("hidden");
+
   // Title bar
   $("#db-title").textContent = d.filename || "Dataset";
   $("#db-sub").textContent =
@@ -1202,7 +1207,105 @@ async function exportFile(kind) {
 $("#btn-new").addEventListener("click", () => {
   $("#dashboard").classList.add("hidden");
   $("#setup-screen").classList.remove("hidden");
+  // Drop the synthetic-only chrome so the next run starts fresh.
+  document.body.classList.remove("synthetic-only");
+  $("#btn-build-dashboard").classList.add("hidden");
 });
+
+// ---------------------------------------------------------------------------
+// Skip-to-synthetic flow — clean the data + detect archetype, then jump
+// straight to the synthetic-research panel. No AI narrative, no playbook,
+// no charts; the dashboard is collapsed to just the synthetic card via
+// the body.synthetic-only CSS hook.
+// ---------------------------------------------------------------------------
+$("#skip-to-synthetic").addEventListener("click", skipToSynthetic);
+$("#btn-build-dashboard").addEventListener("click", upgradeToFullDashboard);
+
+async function skipToSynthetic() {
+  const status = $("#run-status");
+  status.textContent = ""; status.className = "status-line center";
+
+  // Be forgiving about setup order — same as runAnalysis().
+  if (!state.apiKey) {
+    const typed = ($("#api-key").value || "").trim();
+    if (typed) state.apiKey = typed;
+  }
+  if (!state.apiKey) {
+    status.textContent = "Enter your API key first — synthetic studies still call the LLM."; status.classList.add("err");
+    return;
+  }
+  if (!state.fileBlob) {
+    status.textContent = "Upload a CSV first."; status.classList.add("err");
+    return;
+  }
+
+  const skipBtn = $("#skip-to-synthetic");
+  const runBtn = $("#run-analysis");
+  skipBtn.disabled = true; runBtn.disabled = true;
+  status.textContent = "Cleaning data and detecting archetype…";
+
+  const doPrep = async () => {
+    const r = await fetch("/api/quick_prep", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ archetype_override: state.archetypeOverride || null }),
+    });
+    const j = await r.json().catch(() => ({}));
+    return { ok: r.ok, body: j };
+  };
+
+  try {
+    let res = await doPrep();
+    if (!res.ok && /no dataset/i.test(res.body.error || "")) {
+      status.textContent = "Re-uploading dataset…";
+      try { await uploadBlob(state.fileBlob); } catch (_) {}
+      res = await doPrep();
+    }
+    if (!res.ok) throw new Error(res.body.error || "Quick prep failed");
+
+    // Stash a minimal lastData so the dashboard chrome has something
+    // sane to read (title bar, archetype badge).
+    state.lastData = {
+      filename: res.body.filename,
+      rows: res.body.rows,
+      cols: res.body.cols,
+      mode: "Synthetic only",
+      archetype: res.body.archetype,
+      clean_summary: res.body.clean_summary,
+      synthetic_only: true,
+    };
+
+    // Title bar + archetype badge — minimal render, no charts.
+    $("#db-title").textContent = res.body.filename || "Dataset";
+    $("#db-sub").textContent = `${res.body.rows.toLocaleString()} rows × ${res.body.cols} columns · Synthetic-only mode`;
+    renderArchetype(res.body.archetype);
+    const srInfo = $("#sr-panel-info");
+    if (srInfo) srInfo.textContent = `Synthetic panel ready — digital twins built from ${res.body.archetype?.name || "your"} segments`;
+
+    // Flip into synthetic-only mode, swap "New analysis" for "Build full dashboard".
+    document.body.classList.add("synthetic-only");
+    $("#btn-build-dashboard").classList.remove("hidden");
+    $("#setup-screen").classList.add("hidden");
+    $("#dashboard").classList.remove("hidden");
+    // Scroll user straight to the synthetic card.
+    $("#synthetic-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    status.textContent = e.message; status.classList.add("err");
+  } finally {
+    skipBtn.disabled = false; runBtn.disabled = false;
+  }
+}
+
+async function upgradeToFullDashboard() {
+  // Hop back to the setup screen so runAnalysis() can render the full
+  // dashboard cleanly. The CSV and archetype are still cached server-side.
+  document.body.classList.remove("synthetic-only");
+  $("#btn-build-dashboard").classList.add("hidden");
+  $("#dashboard").classList.add("hidden");
+  $("#setup-screen").classList.remove("hidden");
+  // Kick off the full pipeline immediately.
+  $("#run-analysis").click();
+}
 
 // ---------------------------------------------------------------------------
 // Utils

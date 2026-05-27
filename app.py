@@ -13,6 +13,7 @@ import logging
 import traceback
 from datetime import datetime
 from threading import Lock
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -826,6 +827,12 @@ def _build_prompt(profile: dict, mode: str, custom: str, benchmarks: list,
     )
 
 
+# Narrative model for OpenAI users. Set via OPENAI_MODEL env var if you
+# need to swap it without redeploying; defaults to the user-specified
+# gpt-5.4-mini build.
+OPENAI_NARRATIVE_MODEL = os.environ.get("OPENAI_NARRATIVE_MODEL", "gpt-5.4-mini")
+
+
 def call_openai(api_key: str, prompt: str, strict: bool = False) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
@@ -833,7 +840,7 @@ def call_openai(api_key: str, prompt: str, strict: bool = False) -> str:
     if strict:
         system += " Your previous response was not valid JSON. Return ONLY a JSON object with no other text, no markdown, no fences."
     resp = client.chat.completions.create(
-        model="gpt-4o",
+        model=OPENAI_NARRATIVE_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -1497,7 +1504,7 @@ def api_config():
     state["api_key"] = api_key
 
     labels = {
-        "openai": "OpenAI · gpt-4o",
+        "openai": f"OpenAI · {OPENAI_NARRATIVE_MODEL}",
         "anthropic": "Anthropic · claude-sonnet-4",
         "gemini": "Google · gemini-1.5-pro",
     }
@@ -1543,6 +1550,73 @@ def api_upload():
         return jsonify({"error": f"Upload failed: {str(e)[:200]}"}), 500
 
 
+def _clean_and_detect(state: dict, archetype_override: str = "") -> tuple:
+    """Shared prelude for /api/analyze and /api/quick_prep.
+
+    Cleans the dataset, detects the B2C archetype (applying any user
+    override), and stashes both on the session state. Returns
+    (df, clean_summary, archetype). Cheap + deterministic — no AI calls.
+    """
+    df, clean_summary = clean_dataframe(state["original_df"].copy())
+    state["cleaned_df"] = df
+    state["clean_summary"] = clean_summary
+    # New dataset — drop any cached RAG evidence index from a prior run.
+    state.pop("evidence_index", None)
+
+    archetype = arch_mod.detect_archetype(df)
+    if archetype_override and archetype_override in playbook_mod.PLAYBOOKS:
+        archetype = arch_mod.ArchetypeMatch(
+            name=archetype_override,
+            confidence=1.0,
+            signals=[f"user override (was {archetype.name})"] + archetype.signals,
+            role_columns=archetype.role_columns,
+        )
+    state["archetype"] = archetype
+    return df, clean_summary, archetype
+
+
+@app.route("/api/quick_prep", methods=["POST"])
+def api_quick_prep():
+    """Fast prep path for the 'skip the dashboard, go to synthetic' flow.
+
+    Runs only the deterministic work that synthetic research depends on:
+    clean the dataset and detect the archetype. No AI narrative, no
+    chart bundle, no AB/correlation/timeseries/outliers, no playbook.
+    Typical latency: < 1s on a 50MB CSV vs. 10-30s for /api/analyze.
+    """
+    state = get_state()
+    if "original_df" not in state:
+        return jsonify({"error": "No dataset found on the server. Please re-upload your CSV."}), 400
+
+    body = request.get_json(silent=True) or {}
+    archetype_override = (body.get("archetype_override") or "").strip().lower()
+
+    try:
+        df, clean_summary, archetype = _clean_and_detect(state, archetype_override)
+        # Synthetic research reads state["playbook"]; leave it unset (the
+        # personas module treats playbook=None as a no-op).
+        state.pop("playbook", None)
+        # No prior /analyze ran, so any stale dashboard payload is bogus.
+        state.pop("last_analysis", None)
+        return jsonify({
+            "ok": True,
+            "filename": state.get("filename"),
+            "rows": int(len(df)),
+            "cols": int(len(df.columns)),
+            "archetype": {
+                "name": archetype.name,
+                "confidence": archetype.confidence,
+                "description": arch_mod.archetype_description(archetype.name),
+                "signals": archetype.signals,
+                "role_columns": archetype.role_columns,
+            },
+            "clean_summary": clean_summary,
+        })
+    except Exception as e:
+        log.error(f"Quick prep failed: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": f"Quick prep failed: {str(e)[:300]}"}), 500
+
+
 @app.route("/api/analyze", methods=["POST"])
 def api_analyze():
     state = get_state()
@@ -1568,65 +1642,49 @@ def api_analyze():
     archetype_override = (body.get("archetype_override") or "").strip().lower()
 
     try:
-        # 1. Clean
-        df, clean_summary = clean_dataframe(state["original_df"].copy())
-        state["cleaned_df"] = df
-        state["clean_summary"] = clean_summary
-        # New dataset — drop any cached RAG evidence index from a prior run.
-        state.pop("evidence_index", None)
+        # 1. Clean + detect archetype (shared with /api/quick_prep).
+        df, clean_summary, archetype = _clean_and_detect(state, archetype_override)
 
         # 2. Profile
         profile = profile_dataframe(df)
 
-        # 3. Detect B2C archetype + run the matching senior-analyst playbook.
-        # This is the specialization layer: instead of generic stats, we
-        # apply the right analytical playbook (RFM/cohorts for orders,
-        # ROAS/CAC for marketing, etc.) for the detected dataset type.
-        archetype = arch_mod.detect_archetype(df)
-        # User override: if the detector got it wrong, the UI's dropdown
-        # forces a different archetype. We keep the role-column mapping
-        # since those rules are independent of the archetype label.
-        if archetype_override and archetype_override in playbook_mod.PLAYBOOKS:
-            archetype = arch_mod.ArchetypeMatch(
-                name=archetype_override,
-                confidence=1.0,  # user-asserted
-                signals=[f"user override (was {archetype.name})"] + archetype.signals,
-                role_columns=archetype.role_columns,
-            )
+        # 3. Run the B2C playbook for the detected archetype.
         playbook = playbook_mod.run_playbook(archetype.name, df, archetype.role_columns)
-        state["archetype"] = archetype
         state["playbook"] = playbook
 
         # 4. Compute authoritative summary stats BEFORE the AI runs. These
         # numbers are the ground truth the narrative must reference.
         grounded = compute_grounded_stats(df)
 
-        # 5. AI narrative — given the archetype + playbook output so it
-        # speaks the right analyst vocabulary and cites real numbers.
-        ai = analyze(provider, api_key, profile, mode, custom, benchmarks,
-                     grounded=grounded, clean_summary=clean_summary,
-                     archetype=archetype, playbook=playbook)
+        # 5. AI narrative runs in parallel with the deterministic chart /
+        # correlation / timeseries / outlier / AB work. Total wall time
+        # collapses to ~max(AI call, local work) instead of the sum.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ai_future = pool.submit(
+                analyze, provider, api_key, profile, mode, custom, benchmarks,
+                grounded, clean_summary, archetype, playbook,
+            )
 
-        # 5. Build charts deterministically in code. Archetype-aware charts
-        # (cohort heatmap, channel matrix, funnel, etc.) come first, generic
-        # ones (top-N, scatter) fill in behind them.
-        arch_charts = playbook_mod.build_archetype_charts(
-            archetype.name, df, archetype.role_columns, playbook)
-        generic_charts = build_auto_charts(df)
-        # Don't duplicate concepts the archetype chart already covered well
-        # (e.g. don't show two "channel" bars). Cheap heuristic by title prefix.
-        arch_titles_lower = {c.get("title", "").lower() for c in arch_charts}
-        generic_charts = [c for c in generic_charts
-                          if c.get("title", "").lower() not in arch_titles_lower]
-        charts = arch_charts + generic_charts
+            # 6. Build charts deterministically. Archetype-aware charts
+            # come first; generic ones (top-N, scatter) fill in behind.
+            arch_charts = playbook_mod.build_archetype_charts(
+                archetype.name, df, archetype.role_columns, playbook)
+            generic_charts = build_auto_charts(df)
+            arch_titles_lower = {c.get("title", "").lower() for c in arch_charts}
+            generic_charts = [c for c in generic_charts
+                              if c.get("title", "").lower() not in arch_titles_lower]
+            charts = arch_charts + generic_charts
 
-        # 6. Auto features
-        corr = correlation_heatmap(df)
-        ts = time_series_trend(df)
-        outliers_df = detect_outliers(df)
-        ab = run_ab_significance(df) if mode == "abtest" or mode == "general" else None
+            # 7. Auto features
+            corr = correlation_heatmap(df)
+            ts = time_series_trend(df)
+            outliers_df = detect_outliers(df)
+            ab = run_ab_significance(df) if mode == "abtest" or mode == "general" else None
 
-        # 6. SQL
+            # 8. Wait for the AI call (or surface its error).
+            ai = ai_future.result()
+
+        # 9. SQL
         create_sql = sql_create_table(df)
         sql_queries = [{"title": "CREATE TABLE", "sql": create_sql}]
         sql_queries.extend(ai.get("sql_queries", []))
