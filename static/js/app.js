@@ -1167,7 +1167,24 @@ function renderSyntheticResults(j) {
       </details>`;
   }
 
+  // Detected demographic / geographic context — show users WHICH
+  // demographic assumptions the engine baked into the prompts.
+  const demoLine = srRenderDemoContext(j);
+  // Behavioral biases this study type explicitly accounted for. Static
+  // per study_type; mirrors what behavior.py injects into the prompts.
+  const biasLine = srRenderBiasesAccountedFor(j.study_type);
+  // Chart placeholder — populated below via Plotly.newPlot after innerHTML.
+  const chartId = `sr-chart-${Date.now()}`;
+  const chartSlot = `<div id="${chartId}" class="sr-chart-box"></div>`;
+
   box.innerHTML = `
+    <div class="sr-disclaimer-strong">
+      <b>Synthetic estimate — supplement, do not replace, real human data.</b>
+      The numbers below are a research <em>prior</em>; the decision input
+      should come from a real survey, A/B test, or interview round. Use the
+      Bayesian validator at the bottom to fuse this prior with a small real
+      sample.
+    </div>
     <div class="sr-rec">
       <div class="sr-rec-head">Recommendation
         <span class="sr-conf ${confClass}">confidence: ${esc(j.confidence||'—')}</span>
@@ -1176,7 +1193,10 @@ function renderSyntheticResults(j) {
     </div>
     ${calLine}
     ${ragLine}
+    ${demoLine}
+    ${biasLine}
     ${body}
+    ${chartSlot}
     <details class="sr-panel-detail">
       <summary>Synthetic panel — ${(j.panel||[]).length} digital-twin segment(s)</summary>
       <ul>${(j.panel||[]).map(p =>
@@ -1189,12 +1209,319 @@ function renderSyntheticResults(j) {
       <ul>${(j.caveats||[]).map(c => `<li>${esc(c)}</li>`).join("")}</ul>
     </div>`;
 
+  // Render Plotly chart for the relevant study type.
+  srRenderStudyChart(chartId, j);
+
   // Wire the validation panel.
   const vp = box.querySelector(".sr-validate");
   if (vp) {
     vp.querySelector(".sv-run").addEventListener("click", () => runValidation(vp));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Synthetic research — supporting renderers
+// ---------------------------------------------------------------------------
+
+// Surface the detected demographic / geographic context so users see the
+// real assumptions the engine baked into the prompts. Empty when the data
+// has no detectable demographics — we don't invent them.
+function srRenderDemoContext(j) {
+  const ctx = j.demographic_context || {};
+  const keys = Object.keys(ctx);
+  if (!keys.length) return "";
+  const items = keys.map(k => {
+    const c = ctx[k];
+    return `<li><b>${esc(k.replace(/^./, x => x.toUpperCase()))}:</b> ${esc(c.label || "")}</li>`;
+  }).join("");
+  return `<div class="sr-demo">
+    <div class="sr-demo-head">📍 Real demographic context detected in your data
+      <span class="muted small">— used to calibrate persona responses, not stereotype</span></div>
+    <ul>${items}</ul>
+  </div>`;
+}
+
+// Show the user which canonical behavioral findings the engine
+// EXPLICITLY accounted for in this study's prompts. Mirrors behavior.py.
+function srRenderBiasesAccountedFor(studyType) {
+  const biases = {
+    "pricing": [
+      ["Anchoring", "Tversky & Kahneman 1974 — segment's historical price is the reference"],
+      ["Loss aversion", "Kahneman & Tversky 1979 — price increases hurt ~2× more than equal decreases help"],
+      ["Charm pricing", "Manning & Sprott 2009 — left-digit bias on $X.99 endings"],
+      ["Price-quality heuristic", "very low prices reduce intent in aspirational categories"],
+    ],
+    "concept": [
+      ["Hypothetical bias", "Morwitz 2007 — stated intent overstates revealed behavior 2-4×"],
+      ["Novelty halo", "first-look excitement decays in 6-8 weeks"],
+      ["Social desirability", "intent toward 'good' categories systematically inflated"],
+    ],
+    "comparison": [
+      ["Compromise effect", "Simonson 1989 — middle option gets a +15-25% share boost"],
+      ["Decoy effect", "Huber, Payne & Puto 1982 — dominated option lifts the dominating one"],
+      ["Brand familiarity tax", "unfamiliar brand starts at ~60-70% of established brand baseline"],
+      ["No-basis rule", "bare-label options return near-equal shares — never invent preferences"],
+    ],
+    "conjoint": [
+      ["Price dominance", "price is usually the highest-magnitude part-worth"],
+      ["Non-compensatory cutoffs", "real customers veto past thresholds, not smoothly weight"],
+      ["Familiar-brand preference", "calibrated to the segment's actual brand history"],
+      ["Name-flattery suppression", "judge concrete attributes only, not marketing words inside levels"],
+    ],
+    "van_westendorp": [
+      ["Anchor to median paid", "PSM bands roughly 0.5× to 2× the segment's measured median price"],
+      ["Status / aspirational lift", "OPP sits above anchor for luxury, below for utilitarian"],
+      ["Quality-signal threshold", "too-cheap lower bound widens for premium segments"],
+    ],
+  }[studyType] || [];
+  if (!biases.length) return "";
+  return `<details class="sr-biases">
+    <summary>🧠 Consumer-psychology findings this study accounted for
+      <span class="muted small">(${biases.length} effect${biases.length === 1 ? "" : "s"})</span></summary>
+    <ul>${biases.map(([n, d]) =>
+      `<li><b>${esc(n)}</b> — ${esc(d)}</li>`).join("")}</ul>
+  </details>`;
+}
+
+// Render the per-study-type Plotly chart into the placeholder div.
+function srRenderStudyChart(id, j) {
+  const el = document.getElementById(id);
+  if (!el || !window.Plotly) return;
+  let fig = null;
+  if (j.study_type === "pricing")           fig = srPricingFig(j);
+  else if (j.study_type === "concept")      fig = srConceptFig(j);
+  else if (j.study_type === "comparison")   fig = srComparisonFig(j);
+  else if (j.study_type === "conjoint")     fig = srConjointFig(j);
+  else if (j.study_type === "van_westendorp") fig = srVwFig(j);
+  if (!fig) { el.style.display = "none"; return; }
+  Plotly.newPlot(id, fig.data, fig.layout,
+    { responsive: true, displayModeBar: false });
+}
+
+// Shared minimal layout — matches the editorial palette of the rest of
+// the dashboard, so the synthetic charts don't feel bolted on.
+function _srLayout(title) {
+  return {
+    title: { text: title, x: 0, xanchor: "left",
+             font: { size: 14, family: "Inter, system-ui, sans-serif", color: "#141815" } },
+    font: { family: "Inter, system-ui, sans-serif", color: "#141815", size: 12 },
+    plot_bgcolor: "#FFFFFF", paper_bgcolor: "#FFFFFF",
+    margin: { l: 60, r: 24, t: 40, b: 50 },
+    legend: { bgcolor: "rgba(255,255,255,0)", font: { size: 11 } },
+    hoverlabel: { bgcolor: "#141815", font: { color: "#F6F7F4" } },
+    xaxis: { showgrid: true, gridcolor: "#EDEFE9", linecolor: "#E2E7E2" },
+    yaxis: { showgrid: true, gridcolor: "#EDEFE9", linecolor: "#E2E7E2" },
+  };
+}
+
+function srPricingFig(j) {
+  const curve = (j.aggregate && j.aggregate.curve) || [];
+  if (!curve.length) return null;
+  const opt = j.aggregate.optimal_price;
+  const x = curve.map(c => c.price);
+  const probs = curve.map(c => c.purchase_probability);
+  const lo = curve.map(c => Math.max(0, c.purchase_probability - c.segment_spread));
+  const hi = curve.map(c => Math.min(1, c.purchase_probability + c.segment_spread));
+  const rev = curve.map(c => c.revenue_index);
+
+  const data = [
+    // Uncertainty band — the real story is the per-segment spread, not
+    // the mean. Drawn as a translucent ribbon between (mean - spread)
+    // and (mean + spread).
+    { x: [...x, ...x.slice().reverse()],
+      y: [...hi, ...lo.slice().reverse()],
+      fill: "toself", fillcolor: "rgba(21, 128, 61, 0.12)",
+      line: { color: "rgba(0,0,0,0)" }, hoverinfo: "skip",
+      name: "Segment spread (±1σ-ish)", showlegend: true },
+    // Per-segment lines — the unpredictability the user asked us to
+    // surface. Each segment is shown as a thin gray line; the
+    // weighted mean is bold green over the top.
+    ...(j.per_segment || [])
+       .filter(s => s.purchase_probability)
+       .map(s => ({
+         x: x, y: x.map(p => s.purchase_probability[p] ?? null),
+         type: "scatter", mode: "lines",
+         line: { color: "rgba(75,86,80,0.45)", width: 1, dash: "dot" },
+         name: s.segment, hovertemplate: `${s.segment}: %{y:.0%}<extra></extra>`,
+       })),
+    // Weighted mean — the headline number.
+    { x: x, y: probs, type: "scatter", mode: "lines+markers",
+      line: { color: "#15803D", width: 3 },
+      marker: { color: "#15803D", size: 8 },
+      name: "Weighted mean", yaxis: "y",
+      hovertemplate: "$%{x}: %{y:.0%} purchase probability<extra></extra>" },
+    // Revenue index on a secondary axis — shows where money is, not
+    // just where intent peaks. Optimal price is where this line crests.
+    { x: x, y: rev, type: "scatter", mode: "lines+markers",
+      line: { color: "#D97706", width: 2, dash: "dash" },
+      marker: { color: "#D97706", size: 6 },
+      name: "Revenue index (price × prob.)", yaxis: "y2",
+      hovertemplate: "$%{x}: revenue index %{y:,.0f}<extra></extra>" },
+  ];
+  const layout = _srLayout("Synthetic demand curve — purchase probability vs. price");
+  layout.xaxis.title = "Price ($)";
+  layout.yaxis = { ...layout.yaxis, title: "Purchase probability", tickformat: ".0%", range: [0, 1] };
+  layout.yaxis2 = { title: "Revenue index", overlaying: "y", side: "right",
+                    showgrid: false };
+  if (opt != null) {
+    layout.shapes = [{ type: "line", x0: opt, x1: opt,
+                       y0: 0, y1: 1, yref: "paper",
+                       line: { color: "#DC2626", width: 2, dash: "dot" } }];
+    layout.annotations = [{ x: opt, y: 1.04, yref: "paper", xref: "x",
+                            text: `Optimal: $${opt}`, showarrow: false,
+                            font: { color: "#DC2626", size: 12 } }];
+  }
+  return { data, layout };
+}
+
+function srConceptFig(j) {
+  const segs = (j.per_segment || []).filter(s => s.purchase_intent != null);
+  if (!segs.length) return null;
+  const overall = j.aggregate?.overall_purchase_intent ?? null;
+  const data = [
+    { x: segs.map(s => s.purchase_intent), y: segs.map(s => s.segment),
+      type: "bar", orientation: "h",
+      marker: { color: segs.map(s =>
+        s.sentiment === "positive" ? "#15803D" :
+        s.sentiment === "negative" ? "#DC2626" : "#D97706") },
+      text: segs.map(s => `${(s.purchase_intent*100).toFixed(0)}%`),
+      textposition: "outside",
+      hovertemplate: "%{y}: %{x:.0%} intent<extra></extra>", showlegend: false },
+  ];
+  const layout = _srLayout("Per-segment purchase intent (colored by sentiment)");
+  layout.xaxis.title = "Stated purchase intent";
+  layout.xaxis.tickformat = ".0%";
+  layout.xaxis.range = [0, Math.max(1, ...segs.map(s => s.purchase_intent)) * 1.15];
+  layout.yaxis = { ...layout.yaxis, automargin: true };
+  if (overall != null) {
+    layout.shapes = [{ type: "line", x0: overall, x1: overall,
+                       y0: -0.5, y1: segs.length - 0.5,
+                       line: { color: "#141815", width: 1.5, dash: "dash" } }];
+    layout.annotations = [{ x: overall, y: segs.length - 0.5,
+                            text: `Weighted mean: ${(overall*100).toFixed(0)}%`,
+                            showarrow: false, yshift: 12,
+                            font: { color: "#141815", size: 11 } }];
+  }
+  return { data, layout };
+}
+
+function srComparisonFig(j) {
+  const shares = j.aggregate?.preference_share || {};
+  const opts = j.options || {};
+  const labels = Object.keys(shares);
+  if (!labels.length) return null;
+  // Per-segment variance for each option → whisker.
+  const segs = (j.per_segment || []).filter(s => s.shares);
+  const spread = labels.map(l => {
+    const vals = segs.map(s => s.shares?.[l] ?? null).filter(v => v != null);
+    if (!vals.length) return 0;
+    const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+    return Math.sqrt(vals.reduce((a, v) => a + (v - m) ** 2, 0) / vals.length);
+  });
+  const winner = j.aggregate.winner;
+  const data = [{
+    x: labels.map(l => shares[l]),
+    y: labels.map(l => `${l}: ${(opts[l] || "").slice(0, 40)}`),
+    type: "bar", orientation: "h",
+    error_x: { type: "data", array: spread, color: "#4B5650", thickness: 1.5 },
+    marker: { color: labels.map(l => l === winner ? "#15803D" : "#4B5650") },
+    text: labels.map(l => `${(shares[l]*100).toFixed(0)}%`),
+    textposition: "outside",
+    hovertemplate: "%{y}: %{x:.0%} share<extra></extra>", showlegend: false,
+  }];
+  const layout = _srLayout("Preference share by option (whiskers = across-segment variance)");
+  layout.xaxis.title = "Weighted preference share";
+  layout.xaxis.tickformat = ".0%";
+  layout.xaxis.range = [0, 1];
+  layout.yaxis = { ...layout.yaxis, automargin: true };
+  return { data, layout };
+}
+
+function srConjointFig(j) {
+  const pw = j.aggregate?.part_worths || {};
+  const attrs = Object.keys(pw);
+  if (!attrs.length) return null;
+  // One trace per attribute → grouped horizontal bars sorted by preference.
+  // Lower mean-rank = preferred, so invert for visualization (higher bar = better).
+  const data = [];
+  let yLabels = [];
+  attrs.forEach((a, i) => {
+    const levels = Object.entries(pw[a]).sort((x, y) => x[1] - y[1]);
+    const maxRank = Math.max(...levels.map(([_, v]) => v));
+    levels.forEach(([lvl, v]) => {
+      const preference = maxRank - v + 1; // invert so higher = preferred
+      yLabels.push(`${a}: ${lvl}`);
+      data.push({
+        x: [preference], y: [`${a}: ${lvl}`],
+        type: "bar", orientation: "h",
+        marker: { color: CAT_PALETTE_JS[i % CAT_PALETTE_JS.length] },
+        text: [`rank ${v.toFixed(2)}`], textposition: "outside",
+        showlegend: false, name: a,
+        hovertemplate: `${a} = ${lvl}: mean rank ${v.toFixed(2)} (lower = preferred)<extra></extra>`,
+      });
+    });
+  });
+  const layout = _srLayout("Conjoint part-worths — preferred attribute levels (longer bar = preferred)");
+  layout.xaxis.title = "Preference (inverted mean rank)";
+  layout.yaxis = { ...layout.yaxis, automargin: true, categoryorder: "array",
+                    categoryarray: yLabels.slice().reverse() };
+  layout.barmode = "stack"; // single bar per row
+  return { data, layout };
+}
+
+function srVwFig(j) {
+  const curves = j.aggregate?.curves || {};
+  const grid = curves.grid || [];
+  if (!grid.length) return null;
+  const a = j.aggregate;
+  const series = [
+    ["too_cheap",     "Too cheap (suspiciously low)",  "#0891B2"],
+    ["cheap",         "Cheap (bargain)",                "#15803D"],
+    ["expensive",     "Expensive",                      "#D97706"],
+    ["too_expensive", "Too expensive (won't buy)",     "#DC2626"],
+  ];
+  const data = series
+    .filter(([k]) => Array.isArray(curves[k]))
+    .map(([k, label, color]) => ({
+      x: grid, y: curves[k], type: "scatter", mode: "lines",
+      line: { color, width: 2.5 }, name: label,
+      hovertemplate: `${label} @ $%{x}: %{y:.0%}<extra></extra>`,
+    }));
+  const layout = _srLayout("Van Westendorp Price Sensitivity Meter");
+  layout.xaxis.title = "Price ($)";
+  layout.yaxis = { ...layout.yaxis, title: "Cumulative share of segment", tickformat: ".0%", range: [0, 1] };
+  layout.shapes = [];
+  layout.annotations = [];
+  const marks = [
+    [a.optimal_price_point, "OPP", "#15803D"],
+    [a.indifference_price_point, "IPP", "#141815"],
+  ];
+  marks.forEach(([p, lab, c]) => {
+    if (p == null) return;
+    layout.shapes.push({ type: "line", x0: p, x1: p, y0: 0, y1: 1,
+                         yref: "paper", line: { color: c, width: 1.5, dash: "dot" } });
+    layout.annotations.push({ x: p, y: 1.03, yref: "paper", xref: "x",
+                               text: `${lab}: $${p}`, showarrow: false,
+                               font: { color: c, size: 11 } });
+  });
+  // Highlight the acceptable price-range band.
+  const lo = a.lower_bound, hi = a.upper_bound;
+  if (lo != null && hi != null) {
+    layout.shapes.push({
+      type: "rect", x0: lo, x1: hi, y0: 0, y1: 1, yref: "paper",
+      fillcolor: "rgba(21, 128, 61, 0.06)", line: { width: 0 },
+    });
+  }
+  return { data, layout };
+}
+
+// Categorical palette mirrored from app.py's CAT_PALETTE for visual
+// continuity between the dashboard and the synthetic charts.
+const CAT_PALETTE_JS = [
+  "#15803D", "#D97706", "#2563EB", "#DC2626", "#7C3AED",
+  "#0891B2", "#DB2777", "#CA8A04", "#4B5650", "#059669",
+  "#9333EA", "#EA580C",
+];
 
 async function runValidation(panel) {
   const out = panel.querySelector(".sv-result");

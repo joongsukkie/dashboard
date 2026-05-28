@@ -32,6 +32,8 @@ import statistics
 
 import numpy as np
 
+import behavior as _behavior
+
 
 # -----------------------------------------------------------------------------
 # LLM plumbing
@@ -103,7 +105,9 @@ def _confidence(spread: float, extrapolating: bool, n_segments: int) -> str:
 # Persona prompt (kept local to avoid a hard dependency on personas.py at
 # call time — the caller passes profiles already built by Phase 1)
 # -----------------------------------------------------------------------------
-def _persona_block(profile: dict, brand: str, evidence: str = "") -> str:
+def _persona_block(profile: dict, brand: str, evidence: str = "",
+                   study_type: str | None = None,
+                   demographic_context: dict | None = None) -> str:
     p = profile
     lines = [
         f"You are estimating how a REAL, measured customer segment of {brand} "
@@ -146,6 +150,15 @@ def _persona_block(profile: dict, brand: str, evidence: str = "") -> str:
                  "a name ('Delicious', 'Premium', 'Pro', 'Ultra', 'Deluxe') "
                  "are marketing, not evidence of quality. A familiar product "
                  "with a nice-sounding name is often one customers dislike.")
+    # Behavioral psychology + demographic block — encodes anchoring,
+    # hypothetical bias, social desirability, compromise/decoy effects,
+    # the relevant generational/income/geography norms etc. Calibrated
+    # per study type. Skipped silently if study_type is None.
+    if study_type:
+        beh = _behavior.build_behavioral_block(study_type, demographic_context)
+        if beh:
+            lines.append("")
+            lines.append(beh)
     return "\n".join(lines)
 
 
@@ -170,7 +183,8 @@ def _seg_evidence(evidence_index: dict | None, query: str, segment: str,
 def run_pricing_study(config: dict, profiles: list[dict], demand_curve: dict | None,
                       caller, api_key: str, brand: str = "the brand",
                       evidence_index: dict | None = None,
-                      openai_key: str | None = None) -> dict:
+                      openai_key: str | None = None,
+                      demographic_context: dict | None = None) -> dict:
     """Estimate purchase probability across a price grid, per segment, then
     aggregate to an expected demand + revenue curve."""
     product = config.get("product", "the product")
@@ -186,7 +200,8 @@ def run_pricing_study(config: dict, profiles: list[dict], demand_curve: dict | N
 
     for prof in profiles:
         ev = _seg_evidence(evidence_index, product, prof["name"], openai_key)
-        prompt = _persona_block(prof, brand, ev) + f"""
+        prompt = _persona_block(prof, brand, ev, study_type="pricing",
+                                 demographic_context=demographic_context) + f"""
 
 SURVEY TASK — PRICING
 Product being tested: {product}
@@ -303,7 +318,8 @@ def _segment_pricing_note(per_segment: list[dict], prices: list[float]) -> str:
 def run_concept_test(config: dict, profiles: list[dict],
                      caller, api_key: str, brand: str = "the brand",
                      evidence_index: dict | None = None,
-                     openai_key: str | None = None) -> dict:
+                     openai_key: str | None = None,
+                     demographic_context: dict | None = None) -> dict:
     """Estimate purchase intent for a new product/feature concept."""
     concept = config.get("concept", "").strip()
     if not concept:
@@ -315,7 +331,8 @@ def run_concept_test(config: dict, profiles: list[dict],
     per_segment = []
     for prof in profiles:
         ev = _seg_evidence(evidence_index, concept, prof["name"], openai_key)
-        prompt = _persona_block(prof, brand, ev) + f"""
+        prompt = _persona_block(prof, brand, ev, study_type="concept",
+                                 demographic_context=demographic_context) + f"""
 
 SURVEY TASK — CONCEPT TEST
 New concept being tested: {concept}
@@ -377,7 +394,8 @@ Return ONLY this JSON:
 def run_comparison_study(config: dict, profiles: list[dict],
                          caller, api_key: str, brand: str = "the brand",
                          evidence_index: dict | None = None,
-                         openai_key: str | None = None) -> dict:
+                         openai_key: str | None = None,
+                         demographic_context: dict | None = None) -> dict:
     """Estimate preference share across 2-4 options. Works for brand
     comparison, product comparison, and message/value-prop testing."""
     options = [str(o).strip() for o in (config.get("options") or []) if str(o).strip()]
@@ -395,7 +413,8 @@ def run_comparison_study(config: dict, profiles: list[dict],
 
     for prof in profiles:
         ev = _seg_evidence(evidence_index, ev_query, prof["name"], openai_key)
-        prompt = _persona_block(prof, brand, ev) + f"""
+        prompt = _persona_block(prof, brand, ev, study_type="comparison",
+                                 demographic_context=demographic_context) + f"""
 
 SURVEY TASK — COMPARISON
 Question: {question}
@@ -486,7 +505,8 @@ def _comparison_segment_note(per_segment: list[dict], winner: str,
 def run_conjoint_study(config: dict, profiles: list[dict],
                        caller, api_key: str, brand: str = "the brand",
                        evidence_index: dict | None = None,
-                       openai_key: str | None = None) -> dict:
+                       openai_key: str | None = None,
+                       demographic_context: dict | None = None) -> dict:
     """Each segment ranks a set of multi-attribute product profiles. We
     aggregate to a panel ranking and derive part-worths — the average rank
     contribution of each attribute level."""
@@ -546,7 +566,8 @@ attributes.
 
 Return ONLY this JSON:
 {{"ranking": {{{', '.join(f'"{l}": <1..{len(cards)}>' for l in labels)}}}}}"""
-        prompt = _persona_block(prof, brand, ev) + task
+        prompt = _persona_block(prof, brand, ev, study_type="conjoint",
+                                 demographic_context=demographic_context) + task
         try:
             resp = _ask(caller, api_key, prompt)
             raw = resp.get("ranking", {})
@@ -615,7 +636,8 @@ Return ONLY this JSON:
 def run_van_westendorp(config: dict, profiles: list[dict],
                        caller, api_key: str, brand: str = "the brand",
                        evidence_index: dict | None = None,
-                       openai_key: str | None = None) -> dict:
+                       openai_key: str | None = None,
+                       demographic_context: dict | None = None) -> dict:
     """Ask each segment the four Van Westendorp questions, then build the
     cumulative price-sensitivity curves and locate OPP / IPP and the range
     of acceptable prices."""
@@ -627,7 +649,8 @@ def run_van_westendorp(config: dict, profiles: list[dict],
     per_segment = []
     for prof in profiles:
         ev = _seg_evidence(evidence_index, product, prof["name"], openai_key)
-        prompt = _persona_block(prof, brand, ev) + f"""
+        prompt = _persona_block(prof, brand, ev, study_type="van_westendorp",
+                                 demographic_context=demographic_context) + f"""
 
 SURVEY TASK — VAN WESTENDORP PRICE SENSITIVITY
 Product: {product}
@@ -703,7 +726,11 @@ Return ONLY this JSON:
             "acceptable_range": [round(min(pmc, pme), 2), round(max(pmc, pme), 2)],
             "curves": {"grid": [round(float(g), 2) for g in grid],
                        "too_cheap": [round(x, 3) for x in too_cheap],
+                       "cheap": [round(x, 3) for x in cheap_curve],
+                       "expensive": [round(x, 3) for x in expensive],
                        "too_expensive": [round(x, 3) for x in too_expensive]},
+            "lower_bound": round(pmc, 2),
+            "upper_bound": round(pme, 2),
         },
         "recommendation": (
             f"Van Westendorp suggests an acceptable price range of "
@@ -725,9 +752,11 @@ def run_study(study_type: str, config: dict, profiles: list[dict],
               demand_curve: dict | None, caller, api_key: str,
               brand: str = "the brand",
               evidence_index: dict | None = None,
-              openai_key: str | None = None) -> dict:
+              openai_key: str | None = None,
+              demographic_context: dict | None = None) -> dict:
     study_type = (study_type or "").lower()
-    ev = {"evidence_index": evidence_index, "openai_key": openai_key}
+    ev = {"evidence_index": evidence_index, "openai_key": openai_key,
+          "demographic_context": demographic_context}
     if study_type == "pricing":
         return run_pricing_study(config, profiles, demand_curve, caller,
                                  api_key, brand, **ev)

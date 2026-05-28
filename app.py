@@ -58,6 +58,7 @@ import personas as personas_mod
 import synthetic_research as sr_mod
 import evidence as evidence_mod
 import validation as validation_mod
+import behavior as behavior_mod
 
 
 # -----------------------------------------------------------------------------
@@ -2260,9 +2261,20 @@ def api_synthetic_research():
                 df, roles, seg_col, seg_lab, openai_key=openai_key)
             state["evidence_index"] = ev_index
 
+        # Detect demographic / geographic context once per session.
+        # Cached on state because it's deterministic over the dataset.
+        demo_ctx = state.get("demographic_context")
+        if demo_ctx is None:
+            demo_ctx = behavior_mod.detect_demographic_context(df, roles)
+            state["demographic_context"] = demo_ctx
+
         result = sr_mod.run_study(study_type, config, profiles, demand,
                                   caller, api_key, brand,
-                                  evidence_index=ev_index, openai_key=openai_key)
+                                  evidence_index=ev_index, openai_key=openai_key,
+                                  demographic_context=demo_ctx)
+        # Surface what was actually detected so the UI can show "this
+        # study assumed your data is predominantly US, median age 36..."
+        result["demographic_context"] = demo_ctx
         result = _attach_calibration(result, study_type)
         result["rag"] = {
             "grounded": bool(ev_index and ev_index.get("chunks")),

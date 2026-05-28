@@ -305,6 +305,36 @@
           <div class="card-label">🧪 Synthetic Research <span class="sr-tag">experimental</span></div>
           <span id="sr-panel-info" class="muted small">Run an analysis first to build the synthetic panel</span>
         </div>
+
+        <!-- Permanent advisory banner. Visible whether or not a study has
+             run. The synthetic engine produces RESEARCH PRIORS, not
+             measurements; the only honest workflow is synthetic →
+             small real survey → Bayesian update. -->
+        <div class="sr-advisory">
+          <div class="sr-advisory-head">
+            <span class="sr-advisory-icon">⚠</span>
+            <b>Read before you use any number on this panel</b>
+          </div>
+          <p>
+            Synthetic research is <b>a starting point, not a verdict</b>. Every
+            estimate below is a <em>research prior</em> — an LLM reasoning as
+            a digital twin of your real customer segments, with their measured
+            behaviour as anchor and the canonical findings of consumer
+            psychology as guardrails. It is <b>not a measurement</b>. Take
+            every number with a grain of salt.
+          </p>
+          <p>
+            Use these results to <b>narrow the search space</b>, pre-flight
+            tests, and prioritize which questions are worth real money to
+            answer. The real decision input should come from <b>actual
+            humans</b>: a small real survey, an A/B test, a conjoint panel,
+            an interview round. The validation panel that appears under
+            every result fuses your real-survey result with the synthetic
+            prior via a Bayesian update — that is the workflow this engine
+            is designed for.
+          </p>
+        </div>
+
         <p class="muted small" style="margin-top:0;">
           Survey a synthetic panel of <em>digital twins</em> — personas built
           from the real customer segments in your data. Every result is a

@@ -1201,3 +1201,76 @@ body.synthetic-only #btn-pdf { display: none !important; }
 .sv-verdict.conf-mid  { color: #B45309; border: 1px solid #B45309; }
 .sv-verdict.conf-low  { color: #B91C1C; border: 1px solid #B91C1C; }
 .sv-result { margin-top: 8px; }
+
+/* ==========================================================================
+   Synthetic research — advisory banner, disclaimer, demographics, biases,
+   chart container. The advisory banner is the prominent message the user
+   asked for: it sits at the top of the synthetic card whether or not a
+   study has run.
+   ========================================================================== */
+.sr-advisory {
+  background: linear-gradient(180deg, #FEF7E6 0%, #FFF9EB 100%);
+  border: 1px solid #F2C94C;
+  border-left: 4px solid #B45309;
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin: 6px 0 14px;
+  color: #4C3A0E;
+}
+.sr-advisory-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; margin-bottom: 6px; color: #7C2D12;
+}
+.sr-advisory-icon { font-size: 16px; }
+.sr-advisory p {
+  margin: 6px 0 0; font-size: 13.5px; line-height: 1.55;
+}
+.sr-advisory b { color: #5B2810; }
+
+/* Per-result tighter disclaimer, shown above the Recommendation card. */
+.sr-disclaimer-strong {
+  background: #FFF7ED;
+  border: 1px solid #FED7AA;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  font-size: 13px; line-height: 1.5; color: #7C2D12;
+}
+.sr-disclaimer-strong b { color: #5B2810; }
+.sr-disclaimer-strong em { font-style: italic; color: #92400E; }
+
+.sr-demo {
+  background: #F0F9FF;
+  border: 1px solid #BAE6FD;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 10px 0;
+  font-size: 13px; color: #0C4A6E;
+}
+.sr-demo-head { font-weight: 600; margin-bottom: 6px; color: #075985; }
+.sr-demo ul { margin: 4px 0 0 18px; padding: 0; }
+.sr-demo li { margin: 2px 0; }
+
+.sr-biases {
+  background: #F5F3FF;
+  border: 1px solid #DDD6FE;
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin: 10px 0;
+  font-size: 13px; color: #4C1D95;
+}
+.sr-biases summary {
+  cursor: pointer; font-weight: 600; color: #5B21B6;
+  padding: 4px 0;
+}
+.sr-biases ul { margin: 6px 0 4px 18px; padding: 0; }
+.sr-biases li { margin: 4px 0; line-height: 1.5; }
+
+.sr-chart-box {
+  margin: 14px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--surface);
+  min-height: 360px;
+}
