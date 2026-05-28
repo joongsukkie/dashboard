@@ -109,9 +109,14 @@ _SEG_PRIORITY = [
 
 
 def _choose_segmentation_column(df: pd.DataFrame, roles: dict,
-                                min_segs: int = 2, max_segs: int = 8) -> str | None:
-    """Pick the column to cut personas on. Prefers marketing-meaningful,
-    low-cardinality categoricals."""
+                                min_segs: int = 2, max_segs: int = 40) -> str | None:
+    """Pick the column to cut personas on. Prefers marketing-meaningful
+    categoricals. build_segment_profiles() takes only the top-N most
+    populated levels (default 6), so a column with up to ~40 unique
+    values still produces a clean panel — the long tail is trimmed
+    automatically. A tighter cap was rejecting realistic retail data
+    (e.g. an Amazon CSV with 15-30 product categories).
+    """
     cols_lower = {c: str(c).lower().replace(" ", "_") for c in df.columns}
     for _kind, keywords in _SEG_PRIORITY:
         for c, cl in cols_lower.items():
