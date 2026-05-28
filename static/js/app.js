@@ -1167,6 +1167,9 @@ function renderSyntheticResults(j) {
       </details>`;
   }
 
+  // Granular 0-100 confidence rating with per-component breakdown.
+  // This is the audit trail the original low/medium/high was hiding.
+  const ratingPanel = srRenderConfidenceRating(j);
   // Detected demographic / geographic context — show users WHICH
   // demographic assumptions the engine baked into the prompts.
   const demoLine = srRenderDemoContext(j);
@@ -1191,6 +1194,7 @@ function renderSyntheticResults(j) {
       </div>
       <div class="sr-rec-body">${esc(j.recommendation||'')}</div>
     </div>
+    ${ratingPanel}
     ${calLine}
     ${ragLine}
     ${demoLine}
@@ -1222,6 +1226,65 @@ function renderSyntheticResults(j) {
 // ---------------------------------------------------------------------------
 // Synthetic research — supporting renderers
 // ---------------------------------------------------------------------------
+
+// Granular 0-100 confidence rating with per-component breakdown. Each
+// component is a small bar showing how it contributed to the total;
+// hovering the row shows the engine's one-line explanation.
+function srRenderConfidenceRating(j) {
+  const r = j.confidence_rating;
+  if (!r || typeof r.score !== "number") return "";
+  const score = Math.round(r.score);
+  const grade = r.grade || "—";
+  const meterColor =
+    score >= 80 ? "#15803D" :
+    score >= 65 ? "#65A30D" :
+    score >= 45 ? "#D97706" :
+    score >= 25 ? "#DC2626" : "#7F1D1D";
+
+  const warns = (r.warnings || []).length
+    ? `<div class="sr-rating-warns"><b>Watch-outs:</b><ul>${
+        r.warnings.map(w => `<li>${esc(w)}</li>`).join("")}</ul></div>`
+    : "";
+
+  const rows = (r.components || []).map(c => {
+    const pct = c.max > 0 ? (c.points / c.max) * 100 : 0;
+    const fillColor =
+      pct >= 80 ? "#15803D" :
+      pct >= 50 ? "#65A30D" :
+      pct >= 30 ? "#D97706" : "#DC2626";
+    return `
+      <div class="sr-rate-row" title="${esc(c.note || "")}">
+        <div class="sr-rate-name">${esc(c.name)}</div>
+        <div class="sr-rate-bar">
+          <div class="sr-rate-fill" style="width:${pct.toFixed(0)}%; background:${fillColor};"></div>
+        </div>
+        <div class="sr-rate-pts">${c.points.toFixed(1)} / ${c.max.toFixed(0)}</div>
+        <div class="sr-rate-note muted small">${esc(c.note || "")}</div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="sr-rating">
+      <div class="sr-rating-head">
+        <div class="sr-rating-score-block">
+          <div class="sr-rating-score" style="color:${meterColor};">${score}<span>/100</span></div>
+          <div class="sr-rating-grade sr-rating-grade-${grade.replace(/[^a-z]/g,'')}">${esc(grade)}</div>
+        </div>
+        <div class="sr-rating-explain">
+          <b>Confidence rating</b>
+          <p class="muted small">A 0-100 trust score, decomposed. Each component is
+          measured from the actual run — panel size, segment agreement, calibration
+          backtest, how well the concept fits your data, demographic coverage, and
+          whether any inputs sit outside the observed range.</p>
+        </div>
+      </div>
+      ${warns}
+      <details class="sr-rating-details" open>
+        <summary>Breakdown</summary>
+        <div class="sr-rate-grid">${rows}</div>
+      </details>
+    </div>`;
+}
 
 // Surface the detected demographic / geographic context so users see the
 // real assumptions the engine baked into the prompts. Empty when the data

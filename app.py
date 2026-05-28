@@ -59,6 +59,7 @@ import synthetic_research as sr_mod
 import evidence as evidence_mod
 import validation as validation_mod
 import behavior as behavior_mod
+import confidence as confidence_mod
 
 
 # -----------------------------------------------------------------------------
@@ -2276,6 +2277,19 @@ def api_synthetic_research():
         # study assumed your data is predominantly US, median age 36..."
         result["demographic_context"] = demo_ctx
         result = _attach_calibration(result, study_type)
+
+        # Granular 0-100 confidence rating that decomposes the trust
+        # judgment into six measurable components (panel, agreement,
+        # calibration, domain fit, demographic coverage, bounds). The
+        # original low/medium/high is kept as a back-stop; this richer
+        # rating is what the UI now leads with.
+        try:
+            result["confidence_rating"] = confidence_mod.score_confidence(
+                result=result, profiles=profiles,
+                demographic_context=demo_ctx, config=config,
+                calibration=result.get("calibration"))
+        except Exception as _conf_exc:
+            log.warning(f"Confidence scoring failed: {_conf_exc}")
         result["rag"] = {
             "grounded": bool(ev_index and ev_index.get("chunks")),
             "n_records_indexed": ev_index.get("n_records", 0) if ev_index else 0,
