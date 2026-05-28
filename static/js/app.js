@@ -138,6 +138,30 @@ async function uploadBlob(file) {
   return j;
 }
 
+/**
+ * Silently re-establish the minimum server-side state that downstream
+ * routes (synthetic_research, chat, column popup) need. Render's free
+ * tier in-memory STORE is volatile; if the worker recycled since the
+ * last call, the server has no cleaned_df / archetype. We can recover
+ * from the browser because the file blob and API key live in JS memory.
+ *
+ * Returns true if recovery succeeded, false if we don't have the
+ * ingredients (no cached blob, etc).
+ */
+async function silentlyReprepState() {
+  if (!state.fileBlob) return false;
+  try {
+    await uploadBlob(state.fileBlob);
+    const r = await fetch("/api/quick_prep", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ archetype_override: state.archetypeOverride || null }),
+    });
+    if (!r.ok) return false;
+    return true;
+  } catch (_) { return false; }
+}
+
 // ---------------------------------------------------------------------------
 // Mode selection + custom KPI show/hide
 // ---------------------------------------------------------------------------
@@ -742,9 +766,11 @@ async function sendChat() {
   };
   try {
     let res = await doChat();
-    if (!res.ok && /no dataset/i.test(res.body.error || "") && state.fileBlob) {
-      try { await uploadBlob(state.fileBlob); } catch (_) {}
-      res = await doChat();
+    // Chat needs cleaned_df, not just original_df, so a worker recycle
+    // means we have to re-prep the dataset, not just re-upload.
+    if (!res.ok && /no dataset analyzed/i.test(res.body.error || "")) {
+      const recovered = await silentlyReprepState();
+      if (recovered) res = await doChat();
     }
     thinking.textContent = res.body.ok ? res.body.answer : (res.body.error || "Error");
   } catch (e) {
@@ -966,19 +992,43 @@ async function runSyntheticStudy() {
   results.classList.remove("hidden");
   results.innerHTML = `<div class="muted small">Surveying the synthetic panel — one call per segment, ~10–40s…</div>`;
 
-  try {
+  const doStudy = async () => {
     const r = await fetch("/api/synthetic_research", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({study_type: type, config, api_key: state.apiKey}),
     });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.ok) {
-      results.innerHTML = `<div class="sr-err">${esc(j.error || "Study failed")}</div>`;
+    let body = {};
+    try { body = await r.json(); }
+    catch (_) {
+      try { body = { error: (await r.text()).slice(0, 400) }; } catch (_) {}
+    }
+    return { ok: r.ok && body.ok, status: r.status, body };
+  };
+
+  try {
+    let res = await doStudy();
+
+    // Server-side state was lost (worker recycle on Render free tier).
+    // Re-upload + re-prep silently, then retry once before surfacing.
+    if (!res.ok && /run an analysis first|no dataset/i.test(res.body.error || "")) {
+      results.innerHTML = `<div class="muted small">Re-prepping dataset on the server…</div>`;
+      const recovered = await silentlyReprepState();
+      if (recovered) {
+        results.innerHTML = `<div class="muted small">Surveying the synthetic panel — one call per segment, ~10–40s…</div>`;
+        res = await doStudy();
+      }
+    }
+
+    if (!res.ok) {
+      const msg = (res.body && res.body.error)
+        ? res.body.error
+        : `Study failed (HTTP ${res.status})`;
+      results.innerHTML = `<div class="sr-err">${esc(msg)}</div>`;
       return;
     }
-    state.lastSynthetic = j;   // captured for the PDF / Excel export
-    renderSyntheticResults(j);
+    state.lastSynthetic = res.body;   // captured for the PDF / Excel export
+    renderSyntheticResults(res.body);
   } catch (e) {
     results.innerHTML = `<div class="sr-err">${esc(e.message)}</div>`;
   } finally {

@@ -2218,9 +2218,10 @@ def api_synthetic_research():
     archetype = state.get("archetype")
 
     if df is None or archetype is None:
-        return jsonify({"error": "Run an analysis first — synthetic research "
-                                 "needs the cleaned dataset and detected "
-                                 "archetype."}), 400
+        # The browser-side recovery path keys off "no dataset" so it can
+        # silently re-upload + re-prep without bothering the user.
+        return jsonify({"error": "No dataset on the server — the worker may "
+                                 "have recycled. Re-prepping…"}), 400
     if not api_key or not provider:
         return jsonify({"error": "AI key missing or unrecognized."}), 400
 
