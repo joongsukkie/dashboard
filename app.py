@@ -81,16 +81,17 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 STORE: dict = {}
 STORE_LOCK = Lock()
 
-ACCENT = "#15803D"  # Emerald-700
-# Single-accent palette: used for single-series charts (time series, scatter).
-PALETTE = ["#15803D", "#22C55E", "#14532D", "#4E7C4A", "#65A30D", "#0D9488", "#4B5650", "#121815"]
-# Distinct categorical palette: each category gets a visually different hue.
-# Used for grouped bars, box plots by category, and binary comparisons where
-# the colors must be readable as separate groups (not shades of green).
+ACCENT = "#1858B5"  # Cobalt visor blue — Jango brand accent
+# Single-accent palette: monochrome cobalt-to-steel run, used for single-
+# series charts (time series, scatter).
+PALETTE = ["#1858B5", "#3B7CD1", "#0A347A", "#5A6E8C", "#7A8390", "#0F4499", "#3A4250", "#0A0E14"]
+# Distinct categorical palette: visually different hues but anchored to the
+# silver / blue / black Jango palette plus a small set of high-contrast
+# accents for breakdown charts (cyan, amber, rust, plum).
 CAT_PALETTE = [
-    "#15803D", "#D97706", "#2563EB", "#DC2626", "#7C3AED",
-    "#0891B2", "#DB2777", "#CA8A04", "#4B5650", "#059669",
-    "#9333EA", "#EA580C",
+    "#1858B5", "#0A347A", "#3B7CD1", "#5A6E8C", "#0F4499",
+    "#06B6D4", "#D97706", "#B45309", "#7C3AED", "#DC2626",
+    "#0891B2", "#3A4250",
 ]
 
 
@@ -920,19 +921,19 @@ def _fig_layout(fig, title):
     fig.update_layout(
         title=dict(
             text=title,
-            font=dict(size=15, family="Inter, -apple-system, system-ui, sans-serif", color="#141815"),
+            font=dict(size=15, family="Rajdhani, Inter, system-ui, sans-serif", color="#0A0E14"),
             x=0, xanchor="left", pad=dict(l=6),
         ),
-        font=dict(family="Inter, -apple-system, system-ui, sans-serif", color="#141815", size=12),
-        plot_bgcolor="#FFFFFF",
-        paper_bgcolor="#FFFFFF",
+        font=dict(family="Rajdhani, Inter, system-ui, sans-serif", color="#0A0E14", size=12),
+        plot_bgcolor="#ECEEF1",
+        paper_bgcolor="#ECEEF1",
         margin=dict(l=50, r=30, t=50, b=50),
         colorway=PALETTE,
-        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="#E2E7E2", borderwidth=0, font=dict(size=11)),
-        hoverlabel=dict(bgcolor="#141815", font=dict(color="#F6F7F4", family="Inter")),
+        legend=dict(bgcolor="rgba(255,255,255,0)", bordercolor="#A8B0BA", borderwidth=0, font=dict(size=11)),
+        hoverlabel=dict(bgcolor="#0A0E14", font=dict(color="#ECEEF1", family="Rajdhani")),
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#EDEFE9", zeroline=False, linecolor="#E2E7E2")
-    fig.update_yaxes(showgrid=True, gridcolor="#EDEFE9", zeroline=False, linecolor="#E2E7E2")
+    fig.update_xaxes(showgrid=True, gridcolor="#C3C8CF", zeroline=False, linecolor="#A8B0BA")
+    fig.update_yaxes(showgrid=True, gridcolor="#C3C8CF", zeroline=False, linecolor="#A8B0BA")
     return fig
 
 

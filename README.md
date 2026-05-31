@@ -1,4 +1,4 @@
-# Naju
+# Jango
 
 **An AI marketing analyst that turns any B2C dataset into a senior-analyst-grade dashboard, then runs synthetic market research on the same data — A/B tests, conjoint, pricing studies, Van Westendorp PSM — without recruiting a single respondent.**
 
@@ -11,7 +11,7 @@ Live demo: https://lumen-analytics-wo77.onrender.com
 Mid-market B2C teams need two things that a generic BI tool cannot give them:
 
 1. **A senior analyst's interpretation of their data**, not a chart wall. RFM segments, cohort retention, ROAS by channel, MRR waterfalls — applied automatically to whatever shape of data was uploaded.
-2. **Cheap research priors** before they spend $5–25k on a real survey, conjoint panel, or A/B test. "Should we charge $69 or $89?" is currently answered with vibes; Naju answers it with a synthetic study grounded in the company's own measured customer behaviour.
+2. **Cheap research priors** before they spend $5–25k on a real survey, conjoint panel, or A/B test. "Should we charge $69 or $89?" is currently answered with vibes; Jango answers it with a synthetic study grounded in the company's own measured customer behaviour.
 
 The pitch isn't "another AI dashboard." It's **a workflow that compresses what used to be a marketer + data analyst + research vendor into a single CSV upload**, and is honest about which of its answers are measurements vs. priors.
 
@@ -38,7 +38,7 @@ Every dataset is classified as **orders / customers / marketing / sessions / sub
 The AI **never** generates these numbers — they're computed in pandas, then the AI is asked to *narrate* them.
 
 ### 3. Synthetic research with digital-twin personas
-Generic synthetic-research tools (Synthetic Users, etc.) ask an LLM to role-play stereotypes. Naju does the opposite. [`personas.py`](personas.py) builds **digital twins of the actual customer segments measured in the uploaded data** — each persona carries that segment's real AOV, price band, discount behaviour, repeat rate, category mix. The LLM is asked to reason **as that measured segment**, not as an invented persona.
+Generic synthetic-research tools (Synthetic Users, etc.) ask an LLM to role-play stereotypes. Jango does the opposite. [`personas.py`](personas.py) builds **digital twins of the actual customer segments measured in the uploaded data** — each persona carries that segment's real AOV, price band, discount behaviour, repeat rate, category mix. The LLM is asked to reason **as that measured segment**, not as an invented persona.
 
 Five study types supported ([`synthetic_research.py`](synthetic_research.py)):
 

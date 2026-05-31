@@ -1236,10 +1236,10 @@ function srRenderConfidenceRating(j) {
   const score = Math.round(r.score);
   const grade = r.grade || "—";
   const meterColor =
-    score >= 80 ? "#15803D" :
-    score >= 65 ? "#65A30D" :
+    score >= 80 ? "#1858B5" :
+    score >= 65 ? "#3B7CD1" :
     score >= 45 ? "#D97706" :
-    score >= 25 ? "#DC2626" : "#7F1D1D";
+    score >= 25 ? "#B53A2C" : "#7A2A1E";
 
   const warns = (r.warnings || []).length
     ? `<div class="sr-rating-warns"><b>Watch-outs:</b><ul>${
@@ -1249,9 +1249,9 @@ function srRenderConfidenceRating(j) {
   const rows = (r.components || []).map(c => {
     const pct = c.max > 0 ? (c.points / c.max) * 100 : 0;
     const fillColor =
-      pct >= 80 ? "#15803D" :
-      pct >= 50 ? "#65A30D" :
-      pct >= 30 ? "#D97706" : "#DC2626";
+      pct >= 80 ? "#1858B5" :
+      pct >= 50 ? "#3B7CD1" :
+      pct >= 30 ? "#D97706" : "#B53A2C";
     return `
       <div class="sr-rate-row" title="${esc(c.note || "")}">
         <div class="sr-rate-name">${esc(c.name)}</div>
@@ -1366,14 +1366,14 @@ function srRenderStudyChart(id, j) {
 function _srLayout(title) {
   return {
     title: { text: title, x: 0, xanchor: "left",
-             font: { size: 14, family: "Inter, system-ui, sans-serif", color: "#141815" } },
-    font: { family: "Inter, system-ui, sans-serif", color: "#141815", size: 12 },
-    plot_bgcolor: "#FFFFFF", paper_bgcolor: "#FFFFFF",
+             font: { size: 14, family: "Rajdhani, Inter, system-ui, sans-serif", color: "#0A0E14" } },
+    font: { family: "Rajdhani, Inter, system-ui, sans-serif", color: "#0A0E14", size: 12 },
+    plot_bgcolor: "#ECEEF1", paper_bgcolor: "#ECEEF1",
     margin: { l: 60, r: 24, t: 40, b: 50 },
     legend: { bgcolor: "rgba(255,255,255,0)", font: { size: 11 } },
-    hoverlabel: { bgcolor: "#141815", font: { color: "#F6F7F4" } },
-    xaxis: { showgrid: true, gridcolor: "#EDEFE9", linecolor: "#E2E7E2" },
-    yaxis: { showgrid: true, gridcolor: "#EDEFE9", linecolor: "#E2E7E2" },
+    hoverlabel: { bgcolor: "#0A0E14", font: { color: "#ECEEF1" } },
+    xaxis: { showgrid: true, gridcolor: "#C3C8CF", linecolor: "#A8B0BA" },
+    yaxis: { showgrid: true, gridcolor: "#C3C8CF", linecolor: "#A8B0BA" },
   };
 }
 
@@ -1393,7 +1393,7 @@ function srPricingFig(j) {
     // and (mean + spread).
     { x: [...x, ...x.slice().reverse()],
       y: [...hi, ...lo.slice().reverse()],
-      fill: "toself", fillcolor: "rgba(21, 128, 61, 0.12)",
+      fill: "toself", fillcolor: "rgba(24, 88, 181, 0.14)",
       line: { color: "rgba(0,0,0,0)" }, hoverinfo: "skip",
       name: "Segment spread (±1σ-ish)", showlegend: true },
     // Per-segment lines — the unpredictability the user asked us to
@@ -1404,13 +1404,13 @@ function srPricingFig(j) {
        .map(s => ({
          x: x, y: x.map(p => s.purchase_probability[p] ?? null),
          type: "scatter", mode: "lines",
-         line: { color: "rgba(75,86,80,0.45)", width: 1, dash: "dot" },
+         line: { color: "rgba(58, 66, 80, 0.55)", width: 1, dash: "dot" },
          name: s.segment, hovertemplate: `${s.segment}: %{y:.0%}<extra></extra>`,
        })),
     // Weighted mean — the headline number.
     { x: x, y: probs, type: "scatter", mode: "lines+markers",
-      line: { color: "#15803D", width: 3 },
-      marker: { color: "#15803D", size: 8 },
+      line: { color: "#1858B5", width: 3 },
+      marker: { color: "#1858B5", size: 8 },
       name: "Weighted mean", yaxis: "y",
       hovertemplate: "$%{x}: %{y:.0%} purchase probability<extra></extra>" },
     // Revenue index on a secondary axis — shows where money is, not
@@ -1429,10 +1429,10 @@ function srPricingFig(j) {
   if (opt != null) {
     layout.shapes = [{ type: "line", x0: opt, x1: opt,
                        y0: 0, y1: 1, yref: "paper",
-                       line: { color: "#DC2626", width: 2, dash: "dot" } }];
+                       line: { color: "#B53A2C", width: 2, dash: "dot" } }];
     layout.annotations = [{ x: opt, y: 1.04, yref: "paper", xref: "x",
                             text: `Optimal: $${opt}`, showarrow: false,
-                            font: { color: "#DC2626", size: 12 } }];
+                            font: { color: "#B53A2C", size: 12 } }];
   }
   return { data, layout };
 }
@@ -1445,8 +1445,8 @@ function srConceptFig(j) {
     { x: segs.map(s => s.purchase_intent), y: segs.map(s => s.segment),
       type: "bar", orientation: "h",
       marker: { color: segs.map(s =>
-        s.sentiment === "positive" ? "#15803D" :
-        s.sentiment === "negative" ? "#DC2626" : "#D97706") },
+        s.sentiment === "positive" ? "#1858B5" :
+        s.sentiment === "negative" ? "#B53A2C" : "#D97706") },
       text: segs.map(s => `${(s.purchase_intent*100).toFixed(0)}%`),
       textposition: "outside",
       hovertemplate: "%{y}: %{x:.0%} intent<extra></extra>", showlegend: false },
@@ -1459,11 +1459,11 @@ function srConceptFig(j) {
   if (overall != null) {
     layout.shapes = [{ type: "line", x0: overall, x1: overall,
                        y0: -0.5, y1: segs.length - 0.5,
-                       line: { color: "#141815", width: 1.5, dash: "dash" } }];
+                       line: { color: "#0A0E14", width: 1.5, dash: "dash" } }];
     layout.annotations = [{ x: overall, y: segs.length - 0.5,
                             text: `Weighted mean: ${(overall*100).toFixed(0)}%`,
                             showarrow: false, yshift: 12,
-                            font: { color: "#141815", size: 11 } }];
+                            font: { color: "#0A0E14", size: 11 } }];
   }
   return { data, layout };
 }
@@ -1487,7 +1487,7 @@ function srComparisonFig(j) {
     y: labels.map(l => `${l}: ${(opts[l] || "").slice(0, 40)}`),
     type: "bar", orientation: "h",
     error_x: { type: "data", array: spread, color: "#4B5650", thickness: 1.5 },
-    marker: { color: labels.map(l => l === winner ? "#15803D" : "#4B5650") },
+    marker: { color: labels.map(l => l === winner ? "#1858B5" : "#4B5650") },
     text: labels.map(l => `${(shares[l]*100).toFixed(0)}%`),
     textposition: "outside",
     hovertemplate: "%{y}: %{x:.0%} share<extra></extra>", showlegend: false,
@@ -1538,10 +1538,10 @@ function srVwFig(j) {
   if (!grid.length) return null;
   const a = j.aggregate;
   const series = [
-    ["too_cheap",     "Too cheap (suspiciously low)",  "#0891B2"],
-    ["cheap",         "Cheap (bargain)",                "#15803D"],
+    ["too_cheap",     "Too cheap (suspiciously low)",  "#06B6D4"],
+    ["cheap",         "Cheap (bargain)",                "#1858B5"],
     ["expensive",     "Expensive",                      "#D97706"],
-    ["too_expensive", "Too expensive (won't buy)",     "#DC2626"],
+    ["too_expensive", "Too expensive (won't buy)",     "#B53A2C"],
   ];
   const data = series
     .filter(([k]) => Array.isArray(curves[k]))
@@ -1556,8 +1556,8 @@ function srVwFig(j) {
   layout.shapes = [];
   layout.annotations = [];
   const marks = [
-    [a.optimal_price_point, "OPP", "#15803D"],
-    [a.indifference_price_point, "IPP", "#141815"],
+    [a.optimal_price_point, "OPP", "#1858B5"],
+    [a.indifference_price_point, "IPP", "#0A0E14"],
   ];
   marks.forEach(([p, lab, c]) => {
     if (p == null) return;
@@ -1572,7 +1572,7 @@ function srVwFig(j) {
   if (lo != null && hi != null) {
     layout.shapes.push({
       type: "rect", x0: lo, x1: hi, y0: 0, y1: 1, yref: "paper",
-      fillcolor: "rgba(21, 128, 61, 0.06)", line: { width: 0 },
+      fillcolor: "rgba(24, 88, 181, 0.08)", line: { width: 0 },
     });
   }
   return { data, layout };
@@ -1581,7 +1581,7 @@ function srVwFig(j) {
 // Categorical palette mirrored from app.py's CAT_PALETTE for visual
 // continuity between the dashboard and the synthetic charts.
 const CAT_PALETTE_JS = [
-  "#15803D", "#D97706", "#2563EB", "#DC2626", "#7C3AED",
+  "#1858B5", "#D97706", "#2563EB", "#B53A2C", "#7C3AED",
   "#0891B2", "#DB2777", "#CA8A04", "#4B5650", "#059669",
   "#9333EA", "#EA580C",
 ];
